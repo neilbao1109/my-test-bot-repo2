@@ -47,6 +47,10 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     storage = make_storage(root)
     fs = ClawFS(storage, db_url=f"sqlite:///{root}/clawfs.db")
     uploads = UploadManager(scratch_root=os.path.join(root, "uploads"), storage=storage, engine=fs.engine)
+
+    # Let auth.py also accept tokens registered to Tenant rows.
+    from . import auth as _auth
+    _auth.tenant_token_check = fs.tenant_for_token
     app = FastAPI(title="ClawFS", version="0.4.0")
 
     @app.exception_handler(QuotaExceeded)
