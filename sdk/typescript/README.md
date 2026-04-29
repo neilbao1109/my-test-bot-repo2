@@ -1,9 +1,9 @@
-# @clawfs/sdk
+# @neilbao/clawfs-sdk
 
 TypeScript SDK for [ClawFS](../..) — content-addressed file system for agents.
 
 ```ts
-import { ClawFS } from "@clawfs/sdk";
+import { ClawFS } from "@neilbao/clawfs-sdk";
 
 const fs = new ClawFS({
   baseUrl: "https://clawfs.example.com",
@@ -27,7 +27,7 @@ const { token } = await fs.share("notes/today.md", 3600);
 ## Errors
 
 ```ts
-import { ClawFSError } from "@clawfs/sdk";
+import { ClawFSError } from "@neilbao/clawfs-sdk";
 
 try { await fs.get("deadbeef"); }
 catch (e) {

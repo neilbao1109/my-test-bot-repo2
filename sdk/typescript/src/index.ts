@@ -1,5 +1,5 @@
 /**
- * @clawfs/sdk — TypeScript client for ClawFS.
+ * @neilbao/clawfs-sdk — TypeScript client for ClawFS.
  *
  * Pure HTTP, no cloud-vendor dependencies. Mirrors the Python SDK contract:
  *   fs.put / fs.get / fs.link / fs.share
