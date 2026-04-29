@@ -27,7 +27,8 @@ ClawFS is the API. Where the bytes live is your choice:
 - **`local`** — disk on the same host. Default. Best for dev + single-VM prod.
 - **`azure`** — Azure Blob Storage. Managed-identity friendly.
 - **`s3`** — AWS S3 / MinIO / Cloudflare R2 / Backblaze B2 — anything S3-compatible.
+- **`gcs`** — Google Cloud Storage. Auth via Application Default Credentials.
 
-Switching is one env var: `CLAWFS_BACKEND=local|azure|s3`. The wire API and SDKs are identical.
+Switching is one env var: `CLAWFS_BACKEND=local|azure|s3|gcs`. The wire API and SDKs are identical.
 
 See [Operations](./operations.md) for backups, GC, token rotation, and observability.

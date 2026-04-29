@@ -1,0 +1,15 @@
+{{- if and (eq .Values.backend "local") .Values.local.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "clawfs.fullname" . }}-data
+  labels: {{- include "clawfs.labels" . | nindent 4 }}
+spec:
+  accessModes: {{- toYaml .Values.local.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.local.persistence.size }}
+  {{- with .Values.local.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+{{- end }}

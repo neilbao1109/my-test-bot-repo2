@@ -286,3 +286,76 @@ class S3Storage(Storage):
                 parts = name.split("/", 1)
                 if len(parts) == 2 and len(parts[0]) == 2:
                     yield parts[0] + parts[1]
+
+
+class GCSStorage(Storage):
+    """Google Cloud Storage backend.
+
+    Reads bucket from `CLAWFS_GCS_BUCKET`. Auth via the standard ADC chain
+    (GOOGLE_APPLICATION_CREDENTIALS env, gcloud SDK creds, or workload identity
+    when running on GCP).
+
+    Blob naming matches the others: ``objects/<aa>/<rest>``.
+    """
+
+    def __init__(
+        self,
+        bucket: Optional[str] = None,
+        client=None,
+    ):
+        self.bucket_name = bucket or os.environ.get("CLAWFS_GCS_BUCKET")
+        if not self.bucket_name:
+            raise ValueError(
+                "GCSStorage requires bucket (arg or CLAWFS_GCS_BUCKET env)"
+            )
+        self._client = client
+        self._bucket = None
+
+    def _bucket_lazy(self):
+        if self._bucket is None:
+            if self._client is None:
+                try:
+                    from google.cloud import storage as gcs  # type: ignore
+                except ImportError as e:  # pragma: no cover
+                    raise ImportError(
+                        "google-cloud-storage not installed; pip install 'clawfs[gcs]'"
+                    ) from e
+                self._client = gcs.Client()
+            self._bucket = self._client.bucket(self.bucket_name)
+        return self._bucket
+
+    def put(self, hash_hex: str, data: bytes) -> None:
+        if self.exists(hash_hex):
+            return
+        blob = self._bucket_lazy().blob(_name(hash_hex))
+        blob.upload_from_string(data)
+
+    def get(self, hash_hex: str) -> bytes:
+        blob = self._bucket_lazy().blob(_name(hash_hex))
+        try:
+            return blob.download_as_bytes()
+        except Exception as e:
+            try:
+                from google.cloud.exceptions import NotFound  # type: ignore
+                if isinstance(e, NotFound):
+                    raise FileNotFoundError(f"blob {hash_hex} not found") from e
+            except ImportError:
+                pass
+            raise
+
+    def exists(self, hash_hex: str) -> bool:
+        return self._bucket_lazy().blob(_name(hash_hex)).exists()
+
+    def delete(self, hash_hex: str) -> None:
+        try:
+            self._bucket_lazy().blob(_name(hash_hex)).delete()
+        except Exception:
+            pass
+
+    def iter_hashes(self) -> Iterator[str]:
+        prefix = "objects/"
+        for blob in self._bucket_lazy().list_blobs(prefix=prefix):
+            name = blob.name[len(prefix):]
+            parts = name.split("/", 1)
+            if len(parts) == 2 and len(parts[0]) == 2:
+                yield parts[0] + parts[1]
