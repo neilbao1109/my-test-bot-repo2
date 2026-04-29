@@ -78,5 +78,19 @@ def gc(ctx):
     click.echo(f"removed {n} blobs")
 
 
+@cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.pass_context
+def admin(ctx):
+    """Operator CLI: tenant create/list/rotate-token/set-quota/delete, usage.
+
+    Use `clawfs admin --help` for the full subcommand list.
+    """
+    from .admin import main as admin_main
+    # rebuild argv: prepend --root from the click context so admin sees it
+    extra = list(ctx.args)
+    argv = ["--root", ctx.obj["root"], *extra]
+    sys.exit(admin_main(argv))
+
+
 if __name__ == "__main__":
     cli()

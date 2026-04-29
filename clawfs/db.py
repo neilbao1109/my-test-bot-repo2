@@ -7,6 +7,15 @@ from typing import Optional
 from sqlmodel import Field, SQLModel, create_engine
 
 
+class QuotaExceeded(Exception):
+    """Raised when a write would push a tenant past its quota."""
+    def __init__(self, kind: str, used: int, limit: int):
+        super().__init__(f"tenant quota exceeded ({kind}): used={used} limit={limit}")
+        self.kind = kind
+        self.used = used
+        self.limit = limit
+
+
 class Blob(SQLModel, table=True):
     hash: str = Field(primary_key=True)
     size: int
@@ -58,6 +67,20 @@ class Tenant(SQLModel, table=True):
     used_bytes: int = 0
     used_objects: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TenantBlob(SQLModel, table=True):
+    """(tenant_id, blob_hash) link with refcount, so quota accounting
+    counts each blob once per tenant regardless of how many refs point at it.
+
+    Without this we'd either over-count (sum of ref bytes) or under-count
+    (just sum the global blob table). With this, deletes also know exactly
+    when to decrement a tenant's used_bytes.
+    """
+    tenant_id: str = Field(primary_key=True)
+    hash: str = Field(primary_key=True)
+    refcount: int = 0
+    size: int = 0  # cached for fast quota math when removing
 
 
 def make_engine(url: str):

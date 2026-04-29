@@ -1,60 +1,86 @@
 # ClawFS
 
-Content-addressed file storage. SHA-256 dedup. Refcounted GC. Pluggable backend
-(local disk in v1, Azure Blob in v2). FastAPI HTTP + Click CLI.
+> A content-addressed file system for AI agents. Self-host in 30 seconds, or `pip install` and point at someone else's.
 
-## Local install
+[![PyPI](https://img.shields.io/pypi/v/clawfs)](https://pypi.org/project/clawfs/) [![npm](https://img.shields.io/npm/v/@neilbao/clawfs-sdk)](https://www.npmjs.com/package/@neilbao/clawfs-sdk) [![CI](https://github.com/neilbao1109/my-test-bot-repo2/actions/workflows/ci.yml/badge.svg)](https://github.com/neilbao1109/my-test-bot-repo2/actions/workflows/ci.yml)
 
-```bash
-pip install -e .
-export CLAWFS_ROOT=./data
+```python
+from clawfs.sdk import ClawFS  # pip install clawfs
+fs = ClawFS(base_url="http://localhost:8000", token="...")
 
-# CLI
-echo "hello" > /tmp/hi
-clawfs write notes/hi.txt /tmp/hi
-clawfs ls
-clawfs read notes/hi.txt
-clawfs share notes/hi.txt --ttl 3600
-clawfs rm notes/hi.txt
-clawfs gc
-
-# HTTP
-uvicorn clawfs.api:app --reload
+fs.put("notes/today.md", b"# things I learned\n...")    # SHA-256 dedup
+fs.list("notes/")                                        # list refs
+url = fs.share("notes/today.md", ttl_seconds=3600)       # signed URL
 ```
 
-Endpoints: `PUT/GET /blobs[/{hash}]`, `PUT/GET/DELETE /refs/{path}`,
-`GET /refs`, `POST /shares`, `GET /shares/{token}`, `POST /gc`.
+## Why
 
-## Docker
+Agents produce a lot of files: model outputs, intermediate artifacts, screenshots, traces. S3 is overkill, the local filesystem isn't shareable, and Dropbox doesn't speak HTTP.
+
+ClawFS gives you:
+
+- **One HTTP API** for blobs (by hash) + refs (by name) + signed shares (time-limited URLs)
+- **SHA-256 dedup** out of the box — upload the same model checkpoint from 5 jobs, store it once
+- **Multipart chunking** for multi-GB files without OOM
+- **Multi-tenant** with per-tenant quotas, so you can hand a token to a friend without losing your laptop
+- **Pluggable backends** — local disk, Azure Blob, S3, GCS — same API
+- **Self-host first**: one `pip install` + one shell script, or use the Docker / Helm path
+
+## Install
+
+### As an SDK (talk to an existing deployment)
 
 ```bash
-docker build -t clawfs .
-docker run -p 8000:8000 -v $PWD/data:/data clawfs
+pip install clawfs                 # Python
+npm i @neilbao/clawfs-sdk          # TypeScript
 ```
 
-## Azure
+### As a server (self-host)
 
 ```bash
-az group create -n clawfs-rg -l eastus
-az deployment group create \
-  -g clawfs-rg \
-  -f azure/container-app.bicep \
-  -p image=ghcr.io/you/clawfs:latest
+# laptop / VM (Docker required)
+curl -fsSL https://raw.githubusercontent.com/neilbao1109/my-test-bot-repo2/main/scripts/clawfs-up.sh \
+  | sudo bash -s -- --image ghcr.io/neilbao1109/clawfs:latest
+
+# or kubernetes
+helm install clawfs ./charts/clawfs
 ```
 
-Provisions a Container App + Blob Storage container. Switch the runtime
-backend by setting `CLAWFS_BACKEND=azure` and wiring `AzureBlobStorage`
-into `create_app` (the storage class is already implemented; just swap the
-constructor in `api.py` when you cut v2).
+See [docs/site/quickstart-laptop.md](docs/site/quickstart-laptop.md), [quickstart-vm.md](docs/site/quickstart-vm.md), [quickstart-cloud.md](docs/site/quickstart-cloud.md).
 
-## Architecture
+## Multi-tenant in 30 seconds
 
-- `clawfs/storage.py` — `Storage` ABC, `LocalStorage`, `AzureBlobStorage`.
-- `clawfs/db.py` — SQLModel: `Blob(hash, size, refcount)`, `Ref(path→hash)`, `Share(token→ref)`.
-- `clawfs/core.py` — `ClawFS` orchestrator. Dedup on put, refcount bump/drop on ref change, GC sweeps `refcount==0`.
-- `clawfs/api.py` — FastAPI endpoints.
-- `clawfs/cli.py` — Click CLI.
+```bash
+# create a tenant with a 10 GiB quota
+clawfs admin tenant create alice --quota-bytes 10GiB
+# → ✅ created tenant 'alice'
+# →    token: sk_xxx...
+# →    quota: 10.00 GiB / ∞ objects
 
-Same content under N paths = 1 blob on disk + N rows in `Ref`. Update a path
-to new content: refcount on old hash decrements, new hash increments. `gc`
-deletes orphan blobs.
+# hand them the token; if they exceed quota they get HTTP 413, not your problem
+```
+
+See [docs/site/large-files-and-tenants.md](docs/site/large-files-and-tenants.md) for the chunked-upload + tenant-isolation contract.
+
+## Status
+
+| Sprint | Highlights | Status |
+|---|---|---|
+| 1-2 | Local + Azure backends, FastAPI, Click CLI, Container Apps deploy | shipped |
+| 3 | TS SDK + S3 + Helm + GCS + one-command VM deploy + docs | shipped |
+| 4 | Chunked uploads (1 GiB verified), multi-tenancy, PyPI + npm | shipped |
+| 5 | Tenant quotas, `clawfs admin` CLI, public demo, admin UI | in progress |
+
+Live demo: `http://20.198.122.69` (single-tenant, no quota — for poking only).
+
+## Docs
+
+- [Quickstart — laptop](docs/site/quickstart-laptop.md)
+- [Quickstart — VM](docs/site/quickstart-vm.md)
+- [Quickstart — Azure Container Apps](docs/site/quickstart-cloud.md)
+- [Large files & multi-tenancy](docs/site/large-files-and-tenants.md)
+- [Operations](docs/site/operations.md)
+
+## License
+
+MIT.
