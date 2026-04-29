@@ -63,4 +63,40 @@ class Tenant(SQLModel, table=True):
 def make_engine(url: str):
     engine = create_engine(url, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {})
     SQLModel.metadata.create_all(engine)
+    _migrate(engine)
     return engine
+
+
+def _migrate(engine) -> None:
+    """Tiny additive migration shim for SQLite.
+
+    SQLModel/SQLAlchemy ``create_all`` only creates missing tables, never adds
+    columns to existing ones. We use it because Sprint 4 added ``tenant_id``
+    columns to ``blob`` and ``ref`` and a new ``upload``/``tenant`` table; an
+    in-place upgrade from a 0.2.x DB would otherwise crash at first query.
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "blob" not in insp.get_table_names():
+        return  # fresh DB, create_all already covers it
+
+    def cols(table: str) -> set[str]:
+        return {c["name"] for c in insp.get_columns(table)}
+
+    additions: list[tuple[str, str]] = []
+    if "tenant_id" not in cols("blob"):
+        additions.append(("blob", "tenant_id VARCHAR DEFAULT 'default' NOT NULL"))
+    if "tenant_id" not in cols("ref"):
+        additions.append(("ref", "tenant_id VARCHAR DEFAULT 'default' NOT NULL"))
+
+    if not additions:
+        return
+    with engine.begin() as conn:
+        for table, ddl in additions:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+        # Existing refs were stored without a tenant prefix; rewrite their
+        # path so the multi-tenant code path can resolve them as 'default/...'.
+        conn.execute(
+            text("UPDATE ref SET path = 'default/' || path WHERE path NOT LIKE 'default/%'")
+        )
