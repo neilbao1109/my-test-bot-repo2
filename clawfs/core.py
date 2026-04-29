@@ -139,6 +139,8 @@ class ClawFS:
         t = s.get(Tenant, tenant_id)
         if t is None:
             return  # legacy / single-tenant deployment, no quota enforced
+        # Sprint 6 P2: reset daily-reset tenants at UTC midnight.
+        self._maybe_reset_daily_locked(s, t)
         # If this exact (tenant, hash) link already exists we'd not consume
         # extra bytes, so it's always allowed.
         link = s.get(TenantBlob, (tenant_id, h))
@@ -148,6 +150,42 @@ class ClawFS:
             raise QuotaExceeded("bytes", t.used_bytes + size, t.max_bytes)
         if t.max_objects is not None and t.used_objects + 1 > t.max_objects:
             raise QuotaExceeded("objects", t.used_objects + 1, t.max_objects)
+
+    def _maybe_reset_daily_locked(self, s: Session, t: Tenant) -> None:
+        """If tenant has daily_reset and last_reset_at < today UTC midnight,
+        wipe its blobs/refs and zero counters. Caller already holds Session.
+        """
+        if not t.daily_reset:
+            return
+        now = datetime.utcnow()
+        midnight = datetime(now.year, now.month, now.day)
+        if t.last_reset_at is not None and t.last_reset_at >= midnight:
+            return
+        # Drop all refs + tenant-blob links + shares for this tenant.
+        for ref in list(s.exec(select(Ref).where(Ref.tenant_id == t.id))):
+            for sh in list(s.exec(select(Share).where(Share.ref_path == ref.path))):
+                s.delete(sh)
+            self._bump(s, ref.hash, -1)
+            s.delete(ref)
+        for link in list(s.exec(select(TenantBlob).where(TenantBlob.tenant_id == t.id))):
+            s.delete(link)
+        t.used_bytes = 0
+        t.used_objects = 0
+        t.last_reset_at = now
+        s.add(t)
+        s.flush()
+
+    def maybe_reset_daily(self, tenant_id: str) -> bool:
+        """Public wrapper. Returns True if a reset happened."""
+        with Session(self.engine) as s:
+            t = s.get(Tenant, tenant_id)
+            if t is None or not t.daily_reset:
+                return False
+            before = t.last_reset_at
+            self._maybe_reset_daily_locked(s, t)
+            did = t.last_reset_at != before
+            s.commit()
+            return did
 
     def _link_inc(self, s: Session, tenant_id: str, h: str, size: int) -> None:
         link = s.get(TenantBlob, (tenant_id, h))
@@ -252,6 +290,8 @@ class ClawFS:
         tokens: Optional[List[str]] = None,
         max_bytes: Optional[int] = None,
         max_objects: Optional[int] = None,
+        rate_limit_per_minute: Optional[int] = None,
+        daily_reset: Optional[bool] = None,
     ) -> Tenant:
         with Session(self.engine) as s:
             t = s.get(Tenant, tenant_id)
@@ -265,6 +305,11 @@ class ClawFS:
                 t.max_bytes = max_bytes
             if max_objects is not None:
                 t.max_objects = max_objects
+            if rate_limit_per_minute is not None:
+                # Pass 0 to clear ("unlimited").
+                t.rate_limit_per_minute = rate_limit_per_minute or None
+            if daily_reset is not None:
+                t.daily_reset = daily_reset
             s.add(t)
             s.commit()
             s.refresh(t)
@@ -278,3 +323,11 @@ class ClawFS:
                 if token in {x.strip() for x in t.tokens_csv.split(",") if x.strip()}:
                     return t.id
         return None
+
+    def get_rate_limit(self, tenant_id: str) -> Optional[int]:
+        """Return per-minute rate limit for tenant, or None if unlimited/unknown."""
+        with Session(self.engine) as s:
+            t = s.get(Tenant, tenant_id)
+            if t is None:
+                return None
+            return t.rate_limit_per_minute

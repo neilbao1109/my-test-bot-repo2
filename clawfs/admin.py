@@ -67,10 +67,13 @@ def cmd_tenant_create(args) -> int:
         tokens=[token],
         max_bytes=max_b,
         max_objects=args.quota_objects,
+        rate_limit_per_minute=args.rate_limit,
+        daily_reset=args.daily_reset,
     )
     print(f"✅ created tenant {t.id!r} ({t.name})")
     print(f"   token: {token}")
     print(f"   quota: {fmt_size(t.max_bytes)} / {t.max_objects or '∞'} objects")
+    print(f"   rate_limit: {t.rate_limit_per_minute or '∞'}/min   daily_reset: {t.daily_reset}")
     return 0
 
 
@@ -83,11 +86,13 @@ def cmd_tenant_list(args) -> int:
     if not rows:
         print("(no tenants)")
         return 0
-    print(f"{'ID':<20} {'NAME':<20} {'USED':<14} {'QUOTA':<14} {'OBJECTS':<10} {'TOKENS':<6}")
+    print(f"{'ID':<20} {'NAME':<20} {'USED':<14} {'QUOTA':<14} {'OBJECTS':<10} {'TOKENS':<6} {'RATE':<8} {'DAILY':<6}")
     for t in rows:
         ntok = len([x for x in (t.tokens_csv or '').split(',') if x.strip()])
+        rate = f"{t.rate_limit_per_minute}/m" if t.rate_limit_per_minute else "∞"
+        daily = "yes" if t.daily_reset else "no"
         print(f"{t.id:<20} {t.name:<20} {fmt_size(t.used_bytes):<14} {fmt_size(t.max_bytes):<14} "
-              f"{t.used_objects}/{t.max_objects or '∞':<6} {ntok:<6}")
+              f"{t.used_objects}/{t.max_objects or '∞':<6} {ntok:<6} {rate:<8} {daily:<6}")
     return 0
 
 
@@ -103,9 +108,19 @@ def cmd_tenant_rotate(args) -> int:
 def cmd_tenant_set_quota(args) -> int:
     fs = _fs(args.root)
     max_b = parse_size(args.bytes) if args.bytes else None
-    fs.upsert_tenant(args.id, max_bytes=max_b, max_objects=args.objects)
+    fs.upsert_tenant(
+        args.id,
+        max_bytes=max_b,
+        max_objects=args.objects,
+        rate_limit_per_minute=args.rate_limit,
+        daily_reset=args.daily_reset,
+    )
     u = fs.get_usage(args.id)
     print(f"✅ updated quota for {args.id!r}: bytes={fmt_size(u['max_bytes'])} objects={u['max_objects'] or '∞'}")
+    if args.rate_limit is not None:
+        print(f"   rate_limit: {args.rate_limit or '∞'}/min")
+    if args.daily_reset is not None:
+        print(f"   daily_reset: {args.daily_reset}")
     return 0
 
 
@@ -146,6 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--token", help="explicit token (default: auto-generated)")
     c.add_argument("--quota-bytes", help="max bytes (e.g. 10GiB, 500MB)")
     c.add_argument("--quota-objects", type=int, help="max distinct blobs")
+    c.add_argument("--rate-limit", type=int, default=None,
+                   help="requests per minute (per tenant+IP); 0 or omit = unlimited")
+    c.add_argument("--daily-reset", dest="daily_reset", action="store_true", default=None,
+                   help="reset usage at UTC midnight (demo tenants)")
+    c.add_argument("--no-daily-reset", dest="daily_reset", action="store_false")
     c.set_defaults(func=cmd_tenant_create)
 
     lst = tnsub.add_parser("list")
@@ -159,6 +179,11 @@ def build_parser() -> argparse.ArgumentParser:
     sq.add_argument("id")
     sq.add_argument("--bytes", help="max bytes (e.g. 10GiB)")
     sq.add_argument("--objects", type=int)
+    sq.add_argument("--rate-limit", type=int, default=None,
+                    help="requests per minute (per tenant+IP); 0 = unlimited")
+    sq.add_argument("--daily-reset", dest="daily_reset", action="store_true", default=None,
+                    help="reset usage at UTC midnight")
+    sq.add_argument("--no-daily-reset", dest="daily_reset", action="store_false")
     sq.set_defaults(func=cmd_tenant_set_quota)
 
     d = tnsub.add_parser("delete")

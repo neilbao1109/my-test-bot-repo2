@@ -15,6 +15,7 @@ from .auth import load_tokens, require_admin, require_auth
 from .core import DEFAULT_TENANT, ClawFS
 from .db import QuotaExceeded
 from .factory import make_storage
+from .ratelimit import RateLimiter
 from .uploads import UploadManager
 
 
@@ -55,6 +56,49 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     from . import auth as _auth
     _auth.tenant_token_check = fs.tenant_for_token
     app = FastAPI(title="ClawFS", version="0.5.0")
+
+    # ---------- Sprint 6 P2: per-tenant + per-IP rate limiting ----------
+    rate_limiter = RateLimiter()
+    app.state.rate_limiter = rate_limiter
+
+    def _client_ip(request: Request) -> str:
+        # Caddy on the demo VM forwards X-Forwarded-For; honor it.
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    @app.middleware("http")
+    async def _rate_limit_mw(request: Request, call_next):
+        path = request.url.path
+        # Never rate-limit health or admin surfaces.
+        if path == "/healthz" or path.startswith("/admin"):
+            return await call_next(request)
+        auth = request.headers.get("authorization")
+        if not auth or not auth.lower().startswith("bearer "):
+            return await call_next(request)
+        token = auth.split(" ", 1)[1].strip()
+        tid = fs.tenant_for_token(token)
+        if not tid:
+            return await call_next(request)
+        limit = fs.get_rate_limit(tid)
+        if not limit:
+            return await call_next(request)
+        ip = _client_ip(request)
+        allowed, retry = rate_limiter.check(tid, ip, limit)
+        if not allowed:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": str(retry)},
+                content={
+                    "detail": f"rate limit exceeded ({limit}/min)",
+                    "kind": "rate_limit",
+                    "retry_after_seconds": retry,
+                    "tenant_id": tid,
+                },
+            )
+        return await call_next(request)
 
     @app.exception_handler(QuotaExceeded)
     async def _quota_handler(_req: Request, exc: QuotaExceeded):
