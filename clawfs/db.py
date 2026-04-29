@@ -12,11 +12,16 @@ class Blob(SQLModel, table=True):
     size: int
     refcount: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    tenant_id: str = Field(default="default", index=True)
 
 
 class Ref(SQLModel, table=True):
-    path: str = Field(primary_key=True)
+    # Composite key: tenant + path. We model it as path-with-tenant-prefix
+    # to keep the existing single-PK shape; tenant_id is also indexed for
+    # efficient list/filter.
+    path: str = Field(primary_key=True)  # storage form: "<tenant>/<user-path>"
     hash: str = Field(index=True)
+    tenant_id: str = Field(default="default", index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -28,7 +33,70 @@ class Share(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class Upload(SQLModel, table=True):
+    """In-progress multipart upload session.
+
+    The actual part bytes are streamed to a tmp directory on disk
+    (`<root>/uploads/<id>/<n>.part`) until ``complete`` is called, at which
+    point they're concatenated, hashed, and handed to the storage backend.
+    """
+    id: str = Field(primary_key=True)
+    tenant_id: str = Field(default="default", index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    completed: bool = False
+    final_hash: Optional[str] = None
+    target_ref: Optional[str] = None  # if set, completing also binds the ref
+
+
+class Tenant(SQLModel, table=True):
+    """Tenant record. tokens (CSV) authenticate as this tenant."""
+    id: str = Field(primary_key=True)
+    name: str = ""
+    tokens_csv: str = ""  # comma-separated bearer tokens
+    max_bytes: Optional[int] = None
+    max_objects: Optional[int] = None
+    used_bytes: int = 0
+    used_objects: int = 0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 def make_engine(url: str):
     engine = create_engine(url, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {})
     SQLModel.metadata.create_all(engine)
+    _migrate(engine)
     return engine
+
+
+def _migrate(engine) -> None:
+    """Tiny additive migration shim for SQLite.
+
+    SQLModel/SQLAlchemy ``create_all`` only creates missing tables, never adds
+    columns to existing ones. We use it because Sprint 4 added ``tenant_id``
+    columns to ``blob`` and ``ref`` and a new ``upload``/``tenant`` table; an
+    in-place upgrade from a 0.2.x DB would otherwise crash at first query.
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(engine)
+    if "blob" not in insp.get_table_names():
+        return  # fresh DB, create_all already covers it
+
+    def cols(table: str) -> set[str]:
+        return {c["name"] for c in insp.get_columns(table)}
+
+    additions: list[tuple[str, str]] = []
+    if "tenant_id" not in cols("blob"):
+        additions.append(("blob", "tenant_id VARCHAR DEFAULT 'default' NOT NULL"))
+    if "tenant_id" not in cols("ref"):
+        additions.append(("ref", "tenant_id VARCHAR DEFAULT 'default' NOT NULL"))
+
+    if not additions:
+        return
+    with engine.begin() as conn:
+        for table, ddl in additions:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+        # Existing refs were stored without a tenant prefix; rewrite their
+        # path so the multi-tenant code path can resolve them as 'default/...'.
+        conn.execute(
+            text("UPDATE ref SET path = 'default/' || path WHERE path NOT LIKE 'default/%'")
+        )

@@ -29,6 +29,19 @@ class Storage(ABC):
     @abstractmethod
     def iter_hashes(self) -> Iterator[str]: ...
 
+    def put_path(self, hash_hex: str, src_path: "os.PathLike[str] | str") -> None:
+        """Persist the contents of ``src_path`` under ``hash_hex``.
+
+        Default implementation reads the whole file into memory then calls
+        :meth:`put`. Backends that can do better (e.g. :class:`LocalStorage`
+        does an atomic rename) should override.
+
+        The caller may delete ``src_path`` afterwards; the storage backend
+        should not retain a reference to it.
+        """
+        with open(src_path, "rb") as f:
+            self.put(hash_hex, f.read())
+
 
 def _name(hash_hex: str) -> str:
     """Shared blob naming: objects/<aa>/<rest>."""
@@ -54,6 +67,26 @@ class LocalStorage(Storage):
         tmp = p.with_suffix(".tmp")
         tmp.write_bytes(data)
         tmp.replace(p)
+
+    def put_path(self, hash_hex: str, src_path) -> None:
+        p = self._path(hash_hex)
+        if p.exists():
+            try:
+                os.unlink(src_path)
+            except OSError:
+                pass
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic rename when on the same filesystem; falls back to copy+unlink.
+        try:
+            os.replace(src_path, p)
+        except OSError:
+            import shutil
+            shutil.copyfile(src_path, p)
+            try:
+                os.unlink(src_path)
+            except OSError:
+                pass
 
     def get(self, hash_hex: str) -> bytes:
         p = self._path(hash_hex)

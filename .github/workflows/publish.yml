@@ -1,0 +1,71 @@
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "What to publish"
+        required: true
+        type: choice
+        options: [both, python, typescript]
+        default: both
+      dry_run:
+        description: "Dry-run only (don't actually upload)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write   # required for PyPI Trusted Publisher (OIDC)
+
+jobs:
+  pypi:
+    if: ${{ github.event_name == 'release' || github.event.inputs.target != 'typescript' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Build
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Verify
+        run: |
+          python -m pip install --upgrade twine
+          twine check dist/*
+      - name: Publish (Trusted Publisher / OIDC)
+        if: ${{ github.event_name == 'release' || github.event.inputs.dry_run == 'false' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Dry-run summary
+        if: ${{ github.event_name != 'release' && github.event.inputs.dry_run != 'false' }}
+        run: ls -la dist/
+
+  npm:
+    if: ${{ github.event_name == 'release' || github.event.inputs.target != 'python' }}
+    runs-on: ubuntu-latest
+    environment: npm
+    defaults:
+      run: { working-directory: sdk/typescript }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Install + build
+        run: |
+          npm ci
+          npm run build
+          npm run test:unit
+      - name: Publish
+        if: ${{ github.event_name == 'release' || github.event.inputs.dry_run == 'false' }}
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Dry-run pack
+        if: ${{ github.event_name != 'release' && github.event.inputs.dry_run != 'false' }}
+        run: npm pack --dry-run

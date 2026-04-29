@@ -1,6 +1,6 @@
 {
   "name": "@clawfs/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for ClawFS — content-addressed file system for agents.",
   "license": "MIT",
   "type": "module",
@@ -24,6 +24,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --clean",
     "test": "vitest run",
+    "test:unit": "vitest run tests/unit.test.ts",
     "test:live": "CLAWFS_LIVE=1 vitest run tests/live.test.ts",
     "lint": "tsc --noEmit"
   },
