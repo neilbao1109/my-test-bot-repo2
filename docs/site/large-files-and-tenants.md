@@ -5,7 +5,7 @@ For anything bigger than a few hundred MB, use the multipart upload API. ClawFS 
 ## TypeScript
 
 ```ts
-import { ClawFS } from "@clawfs/sdk";
+import { ClawFS } from "@neilbao/clawfs-sdk";
 
 const fs = new ClawFS({ baseUrl: "https://clawfs.example.com", token });
 

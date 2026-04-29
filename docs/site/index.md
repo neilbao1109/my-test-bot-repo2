@@ -16,7 +16,7 @@ Pick the one that matches your infra. All three have been verified end-to-end ag
 ## SDKs
 
 - Python — [`clawfs-py`](./sdk-python.md) (`pip install clawfs`)
-- TypeScript — [`@clawfs/sdk`](./sdk-typescript.md) (`npm i @clawfs/sdk`)
+- TypeScript — [`@neilbao/clawfs-sdk`](./sdk-typescript.md) (`npm i @neilbao/clawfs-sdk`)
 
 Both speak the same wire protocol, with sha256 dedup + automatic `Idempotency-Key` so retries are safe.
 

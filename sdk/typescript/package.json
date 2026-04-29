@@ -1,5 +1,5 @@
 {
-  "name": "@clawfs/sdk",
+  "name": "@neilbao/clawfs-sdk",
   "version": "0.2.0",
   "description": "TypeScript SDK for ClawFS — content-addressed file system for agents.",
   "license": "MIT",
