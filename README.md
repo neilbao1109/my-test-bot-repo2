@@ -72,6 +72,15 @@ clawfs admin tenant create alice --quota-bytes 10GiB
 
 See [docs/site/large-files-and-tenants.md](docs/site/large-files-and-tenants.md) for the chunked-upload + tenant-isolation contract.
 
+## Admin
+
+Two ways to manage tenants and quotas:
+
+- **CLI** — `clawfs admin tenant create|list|rotate-token|set-quota|delete` (works against the local SQLite DB; great for `docker exec`).
+- **Web UI** — set `CLAWFS_ADMIN_TOKEN=<your-secret>` and browse to `http://<host>:8000/admin/`. Sign in with the admin token; create tenants, rotate tokens, adjust quotas, delete. The admin token is **separate** from tenant tokens — tenant tokens cannot access `/admin/*`.
+
+Matching JSON API under `/admin/tenants` (all gated by `Authorization: Bearer $CLAWFS_ADMIN_TOKEN`) makes scripting easy too.
+
 ## Status
 
 | Sprint | Highlights | Status |
@@ -79,7 +88,8 @@ See [docs/site/large-files-and-tenants.md](docs/site/large-files-and-tenants.md)
 | 1-2 | Local + Azure backends, FastAPI, Click CLI, Container Apps deploy | shipped |
 | 3 | TS SDK + S3 + Helm + GCS + one-command VM deploy + docs | shipped |
 | 4 | Chunked uploads (1 GiB verified), multi-tenancy, PyPI + npm | shipped |
-| 5 | Tenant quotas, `clawfs admin` CLI, public demo, admin UI | in progress |
+| 5 | Tenant quotas, `clawfs admin` CLI, public demo | shipped |
+| 6 | Admin web UI + admin REST API | in progress |
 
 Live demo: `http://20.198.122.69` (single-tenant, no quota — for poking only).
 

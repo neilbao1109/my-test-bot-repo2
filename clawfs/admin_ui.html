@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ClawFS Admin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #111; color: #ddd; min-height: 100vh;
+  }
+  header {
+    padding: 12px 20px; background: #1a1a1a; border-bottom: 1px solid #333;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  header button { background: transparent; color: #aaa; border: 1px solid #444; }
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin: 24px 0 8px; }
+  input, select, button {
+    background: #1e1e1e; color: #ddd; border: 1px solid #333; padding: 6px 10px;
+    border-radius: 4px; font: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: #4a9eff; }
+  button {
+    cursor: pointer; background: #2a2a2a;
+  }
+  button:hover { background: #333; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: white; }
+  button.primary:hover { background: #2f7ff1; }
+  button.danger { color: #f88; border-color: #663; }
+  button.danger:hover { background: #3a1818; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #222; font-size: 13px; }
+  th { color: #888; font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td .row-actions { display: flex; gap: 4px; }
+  .form-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px; padding: 12px; background: #181818; border: 1px solid #2a2a2a;
+    border-radius: 6px;
+  }
+  .form-grid label { display: flex; flex-direction: column; font-size: 11px; color: #888; gap: 3px; }
+  .form-grid .span-all { grid-column: 1/-1; }
+  .banner {
+    margin: 16px 0; padding: 12px 16px; border-radius: 6px;
+    background: #1f3a1f; border: 1px solid #2d5a2d; color: #afa;
+  }
+  .banner.error { background: #3a1f1f; border-color: #5a2d2d; color: #faa; }
+  .banner.warn { background: #3a2f1f; border-color: #5a4a2d; color: #fda; }
+  .banner code, code {
+    background: #000; padding: 2px 6px; border-radius: 3px;
+    font: 12px ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all;
+  }
+  .copy-row { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  .copy-row code { flex: 1; padding: 8px; }
+  .login-card {
+    max-width: 400px; margin: 80px auto; padding: 24px;
+    background: #181818; border: 1px solid #2a2a2a; border-radius: 8px;
+  }
+  .login-card h2 { margin-top: 0; color: #ddd; text-transform: none; letter-spacing: 0; font-size: 18px; }
+  .login-card input { width: 100%; margin: 8px 0 12px; }
+  .login-card button { width: 100%; }
+  .muted { color: #777; font-size: 12px; }
+  dialog {
+    background: #1a1a1a; color: #ddd; border: 1px solid #333; border-radius: 8px;
+    padding: 20px; min-width: 320px;
+  }
+  dialog::backdrop { background: rgba(0,0,0,0.6); }
+  dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<dialog id="confirm-dialog">
+  <p id="confirm-msg">Are you sure?</p>
+  <div class="actions">
+    <button id="confirm-cancel">Cancel</button>
+    <button id="confirm-ok" class="danger">Confirm</button>
+  </div>
+</dialog>
+
+<dialog id="quota-dialog">
+  <h3 style="margin-top:0">Set quota</h3>
+  <div class="form-grid">
+    <label>Bytes <input id="q-bytes" type="number" min="0" placeholder="(unlimited)"></label>
+    <label>Unit
+      <select id="q-unit">
+        <option value="1">B</option>
+        <option value="1048576">MiB</option>
+        <option value="1073741824" selected>GiB</option>
+      </select>
+    </label>
+    <label>Max objects <input id="q-objects" type="number" min="0" placeholder="(unlimited)"></label>
+  </div>
+  <div class="actions">
+    <button id="quota-cancel">Cancel</button>
+    <button id="quota-ok" class="primary">Save</button>
+  </div>
+</dialog>
+
+<script>
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+
+function fmtBytes(n) {
+  if (n == null) return "∞";
+  const u = ["B","KiB","MiB","GiB","TiB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length-1) { v /= 1024; i++; }
+  return (i === 0 ? v : v.toFixed(2)) + " " + u[i];
+}
+
+function getToken() { return sessionStorage.getItem("adminToken"); }
+function setToken(t) { sessionStorage.setItem("adminToken", t); }
+function clearToken() { sessionStorage.removeItem("adminToken"); }
+
+async function api(method, path, body) {
+  const headers = { "Authorization": "Bearer " + getToken() };
+  let opts = { method, headers };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opts);
+  if (r.status === 401) {
+    clearToken();
+    location.hash = "#/login";
+    renderLogin("Session expired. Please sign in again.");
+    throw new Error("unauthorized");
+  }
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || ("HTTP " + r.status));
+  }
+  return r.status === 204 ? null : r.json();
+}
+
+function confirmDialog(msg) {
+  return new Promise(resolve => {
+    const dlg = $("#confirm-dialog");
+    $("#confirm-msg").textContent = msg;
+    const ok = () => { cleanup(); resolve(true); };
+    const cancel = () => { cleanup(); resolve(false); };
+    function cleanup() {
+      dlg.close();
+      $("#confirm-ok").removeEventListener("click", ok);
+      $("#confirm-cancel").removeEventListener("click", cancel);
+    }
+    $("#confirm-ok").addEventListener("click", ok);
+    $("#confirm-cancel").addEventListener("click", cancel);
+    dlg.showModal();
+  });
+}
+
+function quotaDialog(initial) {
+  return new Promise(resolve => {
+    const dlg = $("#quota-dialog");
+    $("#q-bytes").value = "";
+    $("#q-objects").value = initial?.max_objects ?? "";
+    if (initial?.max_bytes != null) {
+      $("#q-bytes").value = Math.round(initial.max_bytes / 1073741824);
+      $("#q-unit").value = "1073741824";
+    }
+    const ok = () => {
+      const b = $("#q-bytes").value.trim();
+      const u = parseInt($("#q-unit").value, 10);
+      const o = $("#q-objects").value.trim();
+      cleanup();
+      resolve({
+        max_bytes: b === "" ? null : parseInt(b, 10) * u,
+        max_objects: o === "" ? null : parseInt(o, 10),
+      });
+    };
+    const cancel = () => { cleanup(); resolve(null); };
+    function cleanup() {
+      dlg.close();
+      $("#quota-ok").removeEventListener("click", ok);
+      $("#quota-cancel").removeEventListener("click", cancel);
+    }
+    $("#quota-ok").addEventListener("click", ok);
+    $("#quota-cancel").addEventListener("click", cancel);
+    dlg.showModal();
+  });
+}
+
+function renderLogin(errMsg) {
+  document.title = "ClawFS Admin · Sign in";
+  $("#app").innerHTML = `
+    <div class="login-card">
+      <h2>ClawFS Admin</h2>
+      <p class="muted">Enter the admin token (CLAWFS_ADMIN_TOKEN).</p>
+      ${errMsg ? `<div class="banner error">${errMsg}</div>` : ""}
+      <input id="login-token" type="password" placeholder="admin token" autocomplete="off">
+      <button id="login-btn" class="primary">Continue</button>
+    </div>`;
+  const submit = async () => {
+    const t = $("#login-token").value.trim();
+    if (!t) return;
+    setToken(t);
+    try {
+      await api("GET", "/admin/tenants");
+      location.hash = "#/";
+      renderDashboard();
+    } catch (e) {
+      // api() already wiped token + redirected on 401
+    }
+  };
+  $("#login-btn").addEventListener("click", submit);
+  $("#login-token").addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+  $("#login-token").focus();
+}
+
+function copyButton(text) {
+  return `<button onclick="navigator.clipboard.writeText('${text.replace(/'/g, "\\'")}'); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy',1500)">Copy</button>`;
+}
+
+let cachedTenants = [];
+
+async function refreshTenants() {
+  cachedTenants = await api("GET", "/admin/tenants");
+  renderTable();
+}
+
+function renderTable() {
+  const rows = cachedTenants.map(t => `
+    <tr>
+      <td><code>${t.id}</code></td>
+      <td>${t.name || ""}</td>
+      <td class="num">${fmtBytes(t.used_bytes)}</td>
+      <td class="num">${fmtBytes(t.max_bytes)}</td>
+      <td class="num">${t.used_objects}${t.max_objects != null ? " / " + t.max_objects : ""}</td>
+      <td class="num">${t.token_count}</td>
+      <td>
+        <div class="row-actions">
+          <button data-action="rotate" data-id="${t.id}">Rotate</button>
+          <button data-action="quota" data-id="${t.id}">Set Quota</button>
+          <button data-action="delete" data-id="${t.id}" class="danger">Delete</button>
+        </div>
+      </td>
+    </tr>`).join("");
+  $("#tenant-tbody").innerHTML = rows || `<tr><td colspan="7" class="muted">No tenants yet.</td></tr>`;
+  $$("#tenant-tbody button").forEach(b => b.addEventListener("click", onAction));
+}
+
+async function onAction(e) {
+  const id = e.target.dataset.id;
+  const action = e.target.dataset.action;
+  const tenant = cachedTenants.find(t => t.id === id);
+  try {
+    if (action === "delete") {
+      if (!await confirmDialog(`Delete tenant "${id}"? Refs/blobs are kept (run gc to reclaim).`)) return;
+      await api("DELETE", `/admin/tenants/${encodeURIComponent(id)}`);
+      showBanner(`Deleted tenant ${id}.`);
+      await refreshTenants();
+    } else if (action === "rotate") {
+      if (!await confirmDialog(`Rotate token for "${id}"? The old token will stop working immediately.`)) return;
+      const r = await api("POST", `/admin/tenants/${encodeURIComponent(id)}/rotate`);
+      showTokenBanner(id, r.token);
+      await refreshTenants();
+    } else if (action === "quota") {
+      const q = await quotaDialog(tenant);
+      if (q === null) return;
+      await api("PATCH", `/admin/tenants/${encodeURIComponent(id)}`, q);
+      showBanner(`Updated quota for ${id}.`);
+      await refreshTenants();
+    }
+  } catch (err) {
+    showBanner(err.message || String(err), "error");
+  }
+}
+
+function showBanner(msg, kind="ok") {
+  const cls = kind === "error" ? "error" : kind === "warn" ? "warn" : "";
+  $("#banner-area").innerHTML = `<div class="banner ${cls}">${msg}</div>`;
+  setTimeout(() => { if ($("#banner-area").firstChild?.textContent === msg) $("#banner-area").innerHTML = ""; }, 5000);
+}
+
+function showTokenBanner(id, token) {
+  $("#banner-area").innerHTML = `
+    <div class="banner warn">
+      <strong>COPY THIS NOW &mdash; won't be shown again.</strong><br>
+      Token for tenant <code>${id}</code>:
+      <div class="copy-row">
+        <code id="new-token">${token}</code>
+        ${copyButton(token)}
+      </div>
+    </div>`;
+}
+
+function renderDashboard() {
+  document.title = "ClawFS Admin";
+  $("#app").innerHTML = `
+    <header>
+      <h1>🐾 ClawFS Admin</h1>
+      <button id="logout-btn">Sign out</button>
+    </header>
+    <main>
+      <h2>Create tenant</h2>
+      <div class="form-grid">
+        <label>ID <input id="c-id" placeholder="acme" required></label>
+        <label>Name <input id="c-name" placeholder="Acme Corp"></label>
+        <label>Quota bytes <input id="c-qb" type="number" min="0" placeholder="(unlimited)"></label>
+        <label>Unit
+          <select id="c-unit">
+            <option value="1">B</option>
+            <option value="1048576">MiB</option>
+            <option value="1073741824" selected>GiB</option>
+          </select>
+        </label>
+        <label>Max objects <input id="c-qo" type="number" min="0" placeholder="(unlimited)"></label>
+        <div class="span-all">
+          <button id="create-btn" class="primary">Create tenant</button>
+        </div>
+      </div>
+
+      <div id="banner-area"></div>
+
+      <h2>Tenants</h2>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Name</th><th>Used</th><th>Quota</th><th>Objects</th><th>Tokens</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="tenant-tbody"></tbody>
+      </table>
+    </main>`;
+  $("#logout-btn").addEventListener("click", () => {
+    clearToken();
+    location.hash = "#/login";
+    renderLogin();
+  });
+  $("#create-btn").addEventListener("click", onCreate);
+  refreshTenants().catch(e => showBanner(e.message, "error"));
+}
+
+async function onCreate() {
+  const id = $("#c-id").value.trim();
+  if (!id) { showBanner("ID is required.", "error"); return; }
+  const qb = $("#c-qb").value.trim();
+  const qo = $("#c-qo").value.trim();
+  const u = parseInt($("#c-unit").value, 10);
+  const body = {
+    id,
+    name: $("#c-name").value.trim() || undefined,
+    max_bytes: qb === "" ? null : parseInt(qb, 10) * u,
+    max_objects: qo === "" ? null : parseInt(qo, 10),
+  };
+  try {
+    const r = await api("POST", "/admin/tenants", body);
+    showTokenBanner(r.tenant.id, r.token);
+    $("#c-id").value = ""; $("#c-name").value = ""; $("#c-qb").value = ""; $("#c-qo").value = "";
+    await refreshTenants();
+  } catch (e) {
+    showBanner(e.message, "error");
+  }
+}
+
+function route() {
+  if (!getToken()) { renderLogin(); return; }
+  renderDashboard();
+}
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

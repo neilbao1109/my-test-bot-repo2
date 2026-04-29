@@ -5,10 +5,13 @@ import os
 import time
 from typing import AsyncIterator, Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse, Response
+import secrets
+from pathlib import Path
 
-from .auth import load_tokens, require_auth
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, Response
+
+from .auth import load_tokens, require_admin, require_auth
 from .core import DEFAULT_TENANT, ClawFS
 from .db import QuotaExceeded
 from .factory import make_storage
@@ -51,7 +54,7 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     # Let auth.py also accept tokens registered to Tenant rows.
     from . import auth as _auth
     _auth.tenant_token_check = fs.tenant_for_token
-    app = FastAPI(title="ClawFS", version="0.4.0")
+    app = FastAPI(title="ClawFS", version="0.5.0")
 
     @app.exception_handler(QuotaExceeded)
     async def _quota_handler(_req: Request, exc: QuotaExceeded):
@@ -199,6 +202,95 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     def usage(authorization: Optional[str] = Header(default=None)):
         tid = _resolve_tenant(fs, authorization)
         return fs.get_usage(tid)
+
+    # ---------- admin endpoints (require admin token) ----------
+    def _serialize_tenant(t) -> dict:
+        ntok = len([x for x in (t.tokens_csv or "").split(",") if x.strip()])
+        return {
+            "id": t.id,
+            "name": t.name or "",
+            "used_bytes": t.used_bytes,
+            "used_objects": t.used_objects,
+            "max_bytes": t.max_bytes,
+            "max_objects": t.max_objects,
+            "token_count": ntok,
+        }
+
+    @app.get("/admin/tenants", dependencies=[Depends(require_admin)])
+    def admin_list_tenants():
+        from sqlmodel import Session, select
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            rows = list(s.exec(select(Tenant)))
+        return [_serialize_tenant(t) for t in rows]
+
+    @app.post("/admin/tenants", dependencies=[Depends(require_admin)])
+    def admin_create_tenant(payload: dict = Body(...)):
+        tid = (payload.get("id") or "").strip()
+        if not tid:
+            raise HTTPException(400, "id is required")
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            if s.get(Tenant, tid) is not None:
+                raise HTTPException(409, f"tenant {tid!r} already exists")
+        token = f"sk_{secrets.token_urlsafe(24)}"
+        t = fs.upsert_tenant(
+            tid,
+            name=payload.get("name") or tid,
+            tokens=[token],
+            max_bytes=payload.get("max_bytes"),
+            max_objects=payload.get("max_objects"),
+        )
+        return {"tenant": _serialize_tenant(t), "token": token}
+
+    @app.patch("/admin/tenants/{tenant_id}", dependencies=[Depends(require_admin)])
+    def admin_update_tenant(tenant_id: str, payload: dict = Body(...)):
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            if s.get(Tenant, tenant_id) is None:
+                raise HTTPException(404, "tenant not found")
+        kwargs = {}
+        if "max_bytes" in payload:
+            kwargs["max_bytes"] = payload["max_bytes"]
+        if "max_objects" in payload:
+            kwargs["max_objects"] = payload["max_objects"]
+        t = fs.upsert_tenant(tenant_id, **kwargs)
+        return _serialize_tenant(t)
+
+    @app.post("/admin/tenants/{tenant_id}/rotate", dependencies=[Depends(require_admin)])
+    def admin_rotate_tenant(tenant_id: str):
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            if s.get(Tenant, tenant_id) is None:
+                raise HTTPException(404, "tenant not found")
+        new_token = f"sk_{secrets.token_urlsafe(24)}"
+        fs.upsert_tenant(tenant_id, tokens=[new_token])
+        return {"token": new_token}
+
+    @app.delete("/admin/tenants/{tenant_id}", dependencies=[Depends(require_admin)])
+    def admin_delete_tenant(tenant_id: str):
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            t = s.get(Tenant, tenant_id)
+            if t is None:
+                raise HTTPException(404, "tenant not found")
+            s.delete(t)
+            s.commit()
+        return {"deleted": True}
+
+    # ---------- admin UI (HTML, token-gated via fetch) ----------
+    _admin_html_path = Path(__file__).with_name("admin_ui.html")
+
+    @app.get("/admin/", include_in_schema=False)
+    @app.get("/admin", include_in_schema=False)
+    def admin_ui():
+        if _admin_html_path.exists():
+            return FileResponse(_admin_html_path, media_type="text/html")
+        raise HTTPException(404, "admin UI not bundled")
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics():
