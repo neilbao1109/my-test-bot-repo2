@@ -39,4 +39,38 @@ For IRSA on EKS, just omit the keys — boto3 will pick up the pod identity auto
 
 ## Kubernetes (Helm)
 
-> Coming in Sprint 3 W2 stretch — the [Helm chart](../../charts/clawfs/) ships a Deployment + Service + PVC for the local backend, with optional StatefulSet variant.
+The [Helm chart](../../charts/clawfs/) ships a Deployment + Service + PVC for the local backend, with one toggle for s3/azure/gcs backends.
+
+```bash
+helm install clawfs ./charts/clawfs \
+  --set apiTokens=$(openssl rand -hex 16) \
+  --set local.persistence.size=20Gi
+```
+
+Verified end-to-end on a [kind](https://kind.sigs.k8s.io/) cluster: PVC bound, pod ready, healthz + put/get blob roundtrip OK.
+
+For S3-backed multi-replica:
+
+```bash
+helm install clawfs ./charts/clawfs \
+  --set backend=s3 \
+  --set s3.bucket=my-clawfs-bucket --set s3.region=us-west-2 \
+  --set s3.existingSecret=aws-creds \
+  --set replicaCount=3 \
+  --set apiTokens=…
+```
+
+## Google Cloud Storage
+
+```bash
+docker run -d --restart=unless-stopped \
+  -e CLAWFS_BACKEND=gcs \
+  -e CLAWFS_GCS_BUCKET=my-clawfs-bucket \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/etc/gcs/key.json \
+  -v /etc/gcs:/etc/gcs:ro \
+  -e CLAWFS_API_TOKENS=… \
+  -p 8000:8000 \
+  ghcr.io/clawfs/clawfs:latest
+```
+
+On GKE with Workload Identity, omit the key file — ADC will pick up the pod identity.

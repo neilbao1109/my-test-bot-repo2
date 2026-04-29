@@ -1,0 +1,67 @@
+# Default values for the clawfs chart.
+
+image:
+  repository: ghcr.io/clawfs/clawfs
+  tag: ""        # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# How many replicas. Note: with backend=local you almost always want 1 + a PVC.
+# For multi-replica, use backend=s3 or backend=azure.
+replicaCount: 1
+
+# Backend selector. One of: local | s3 | azure
+backend: local
+
+# Auth tokens (CSV). Required for any write API call.
+# Provide either `apiTokens` (rendered into a Secret) or `existingSecret`.
+apiTokens: ""
+existingSecret: ""        # name of a Secret with key CLAWFS_API_TOKENS
+
+# ---- local backend ----
+local:
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""        # empty = cluster default
+    accessModes: [ReadWriteOnce]
+
+# ---- s3 backend (also for MinIO / R2 / B2) ----
+s3:
+  bucket: ""
+  endpointUrl: ""           # set for non-AWS endpoints
+  region: ""
+  # Either inline (rendered into a Secret) or reference an existing Secret.
+  # The existing Secret should expose AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY.
+  accessKeyId: ""
+  secretAccessKey: ""
+  existingSecret: ""
+
+# ---- azure backend ----
+azure:
+  container: ""
+  accountUrl: ""            # https://<acct>.blob.core.windows.net for MI
+  connectionString: ""      # OR a connection string
+  existingSecret: ""        # exposes AZURE_STORAGE_CONNECTION_STRING
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  hosts:
+    - host: clawfs.local
+      paths: ["/"]
+  tls: []
+  annotations: {}
+
+resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits:   { cpu: 500m, memory: 512Mi }
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

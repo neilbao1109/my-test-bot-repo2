@@ -30,9 +30,9 @@ jobs:
       - name: Install
         run: |
           pip install -U pip
-          pip install -e ".[test,azure,s3]"
-      - name: Smoke import azure + s3 backends
-        run: python -c "from clawfs.storage import AzureBlobStorage, S3Storage; print('ok')"
+          pip install -e ".[test,azure,s3,gcs]"
+      - name: Smoke import azure + s3 + gcs backends
+        run: python -c "from clawfs.storage import AzureBlobStorage, S3Storage, GCSStorage; print('ok')"
       - name: Pytest
         run: pytest tests/ -x -q
 
@@ -50,9 +50,46 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with: { version: v3.20.2 }
+      - name: helm lint
+        run: helm lint charts/clawfs
+      - name: helm template (3 backends)
+        run: |
+          helm template t charts/clawfs --set apiTokens=devtoken > /tmp/local.yaml
+          helm template t charts/clawfs --set apiTokens=devtoken --set backend=s3 --set s3.bucket=b --set s3.accessKeyId=a --set s3.secretAccessKey=b > /tmp/s3.yaml
+          helm template t charts/clawfs --set apiTokens=devtoken --set backend=azure --set azure.container=c --set azure.connectionString=cs > /tmp/azure.yaml
+          wc -l /tmp/*.yaml
+      - uses: helm/kind-action@v1
+        with: { cluster_name: clawfs-smoke }
+      - name: Build & load image
+        run: |
+          docker build -t clawfs:ci .
+          kind load docker-image clawfs:ci --name clawfs-smoke
+      - name: helm install + e2e
+        run: |
+          helm install clawfs charts/clawfs \
+            --set image.repository=clawfs --set image.tag=ci \
+            --set image.pullPolicy=Never \
+            --set apiTokens=smoketoken \
+            --set local.persistence.size=1Gi
+          kubectl wait --for=condition=available --timeout=180s deploy/clawfs-clawfs
+          kubectl port-forward svc/clawfs-clawfs 18000:80 &
+          sleep 4
+          curl -fsS http://127.0.0.1:18000/healthz
+          echo hello > /tmp/p.txt
+          HASH=$(curl -fsS -X PUT -H "Authorization: Bearer smoketoken" -F file=@/tmp/p.txt http://127.0.0.1:18000/blobs | python -c 'import json,sys;print(json.load(sys.stdin)["hash"])')
+          curl -fsS -H "Authorization: Bearer smoketoken" http://127.0.0.1:18000/blobs/$HASH -o /tmp/g.txt
+          diff /tmp/p.txt /tmp/g.txt
+          echo "K8S ROUNDTRIP OK"
+
   docker:
     runs-on: ubuntu-latest
-    needs: [lint, test, ts-sdk]
+    needs: [lint, test, ts-sdk, helm]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

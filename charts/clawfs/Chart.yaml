@@ -1,0 +1,16 @@
+apiVersion: v2
+name: clawfs
+description: ClawFS — content-addressed file system for AI agents
+type: application
+version: 0.1.0
+appVersion: "0.2.2"
+home: https://github.com/neilbao1109/my-test-bot-repo2
+sources:
+  - https://github.com/neilbao1109/my-test-bot-repo2
+maintainers:
+  - name: ClawFS team
+keywords:
+  - clawfs
+  - agents
+  - blob
+  - storage

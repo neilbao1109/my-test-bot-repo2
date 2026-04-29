@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "clawfs.fullname" . }}
+  labels: {{- include "clawfs.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: {{- include "clawfs.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "clawfs.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      containers:
+        - name: clawfs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+          env:
+            - name: CLAWFS_BACKEND
+              value: {{ .Values.backend | quote }}
+            {{- if eq .Values.backend "local" }}
+            - name: CLAWFS_ROOT
+              value: /data
+            {{- end }}
+            {{- if eq .Values.backend "s3" }}
+            - name: CLAWFS_S3_BUCKET
+              value: {{ .Values.s3.bucket | quote }}
+            {{- with .Values.s3.endpointUrl }}
+            - name: CLAWFS_S3_ENDPOINT_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.s3.region }}
+            - name: CLAWFS_S3_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if or .Values.s3.existingSecret .Values.s3.accessKeyId }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3.existingSecret | default (printf "%s-s3" (include "clawfs.fullname" .)) }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3.existingSecret | default (printf "%s-s3" (include "clawfs.fullname" .)) }}
+                  key: AWS_SECRET_ACCESS_KEY
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.backend "azure" }}
+            - name: CLAWFS_AZURE_CONTAINER
+              value: {{ .Values.azure.container | quote }}
+            {{- with .Values.azure.accountUrl }}
+            - name: CLAWFS_AZURE_ACCOUNT_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if or .Values.azure.existingSecret .Values.azure.connectionString }}
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.azure.existingSecret | default (printf "%s-azure" (include "clawfs.fullname" .)) }}
+                  key: AZURE_STORAGE_CONNECTION_STRING
+            {{- end }}
+            {{- end }}
+            - name: CLAWFS_API_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "clawfs.tokenSecretName" . }}
+                  key: CLAWFS_API_TOKENS
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          {{- if and (eq .Values.backend "local") .Values.local.persistence.enabled }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- end }}
+      {{- if and (eq .Values.backend "local") .Values.local.persistence.enabled }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "clawfs.fullname" . }}-data
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
