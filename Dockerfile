@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY pyproject.toml ./
 COPY clawfs ./clawfs
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e ".[azure]"
 
 ENV CLAWFS_ROOT=/data
 VOLUME /data

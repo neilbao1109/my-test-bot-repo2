@@ -5,8 +5,14 @@ param name string = 'clawfs'
 @description('Azure region')
 param location string = resourceGroup().location
 
-@description('Container image (e.g. ghcr.io/you/clawfs:latest)')
+@description('Container image (e.g. myacr.azurecr.io/clawfs:latest)')
 param image string
+
+@description('ACR resource ID for image pull (optional). When set, MI will be granted AcrPull and registry config wired up.')
+param acrId string = ''
+
+@description('ACR login server, e.g. myacr.azurecr.io. Required when acrId is set.')
+param acrServer string = ''
 
 var storageName = toLower('${name}sa${uniqueString(resourceGroup().id)}')
 var envName = '${name}-env'
@@ -60,6 +66,12 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
     managedEnvironmentId: env.id
     configuration: {
       ingress: { external: true, targetPort: 8000, transport: 'auto' }
+      registries: empty(acrServer) ? [] : [
+        {
+          server: acrServer
+          identity: 'system'
+        }
+      ]
     }
     template: {
       containers: [
@@ -76,6 +88,33 @@ resource app 'Microsoft.App/containerApps@2023-05-01' = {
       ]
       scale: { minReplicas: 1, maxReplicas: 3 }
     }
+  }
+}
+
+// Grant AcrPull to MI when ACR is provided
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+resource existingAcr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = if (!empty(acrId)) {
+  name: last(split(acrId, '/'))
+}
+resource acrPullAssign 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(acrId)) {
+  name: guid(acrId, app.id, acrPullRoleId)
+  scope: existingAcr
+  properties: {
+    principalId: app.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+  }
+}
+
+// Grant the Container App's managed identity Blob Data Contributor on the storage account
+var blobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+resource roleAssign 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(storage.id, app.id, blobDataContributorRoleId)
+  scope: storage
+  properties: {
+    principalId: app.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', blobDataContributorRoleId)
   }
 }
 
