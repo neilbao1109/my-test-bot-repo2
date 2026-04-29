@@ -37,12 +37,22 @@ npm i @neilbao/clawfs-sdk          # TypeScript
 
 ### As a server (self-host)
 
+**Mac / Windows / any laptop with Docker:**
 ```bash
-# laptop / VM (Docker required)
+docker run -d --name clawfs -p 8000:8000 \
+  -v ~/clawfs-data:/data \
+  -e CLAWFS_API_TOKENS=devtoken \
+  ghcr.io/neilbao1109/clawfs:latest
+```
+
+**Linux VM (Ubuntu 22/24 or Debian 12) — adds Caddy + auto-HTTPS + systemd:**
+```bash
 curl -fsSL https://raw.githubusercontent.com/neilbao1109/my-test-bot-repo2/main/scripts/clawfs-up.sh \
   | sudo bash -s -- --image ghcr.io/neilbao1109/clawfs:latest
+```
 
-# or kubernetes
+**Kubernetes:**
+```bash
 helm install clawfs ./charts/clawfs
 ```
 
