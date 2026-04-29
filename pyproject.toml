@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clawfs"
-version = "0.4.0"
+version = "0.5.0"
 description = "Content-addressed file system with refcounted GC"
 requires-python = ">=3.10"
 dependencies = [
@@ -27,3 +27,6 @@ clawfs = "clawfs.cli:cli"
 
 [tool.setuptools.packages.find]
 include = ["clawfs*"]
+
+[tool.setuptools.package-data]
+clawfs = ["admin_ui.html"]
