@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Iterable, Optional
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from .db import Blob, Ref, Upload
 from .storage import Storage
@@ -192,11 +192,17 @@ class UploadManager:
 
         # cleanup parts but keep the Upload row as a receipt
         for p in parts:
-            try: os.unlink(p)
-            except OSError: pass
-        try: os.unlink(merged)
-        except OSError: pass
-        try: scratch.rmdir()
-        except OSError: pass
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        try:
+            os.unlink(merged)
+        except OSError:
+            pass
+        try:
+            scratch.rmdir()
+        except OSError:
+            pass
 
         return CompletedUpload(hash=final_hash, size=size, created=created)
