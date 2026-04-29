@@ -129,7 +129,16 @@ class AzureBlobStorage(Storage):
             if self.connection_string:
                 svc = BlobServiceClient.from_connection_string(self.connection_string)
             else:
-                svc = BlobServiceClient(self.account_url, credential=self.credential)
+                cred = self.credential
+                if cred is None:
+                    try:
+                        from azure.identity import DefaultAzureCredential  # type: ignore
+                        cred = DefaultAzureCredential()
+                    except ImportError as e:  # pragma: no cover
+                        raise ImportError(
+                            "azure-identity not installed; pip install 'clawfs[azure]'"
+                        ) from e
+                svc = BlobServiceClient(self.account_url, credential=cred)
             cc = svc.get_container_client(self.container)
             try:
                 cc.create_container()
