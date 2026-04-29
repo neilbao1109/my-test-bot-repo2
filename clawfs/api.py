@@ -5,13 +5,18 @@ import os
 import time
 from typing import AsyncIterator, Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse, Response
+import secrets
+from pathlib import Path
 
-from .auth import load_tokens, require_auth
+from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, Response
+
+from .audit import AuditLog
+from .auth import load_tokens, require_admin, require_auth
 from .core import DEFAULT_TENANT, ClawFS
 from .db import QuotaExceeded
 from .factory import make_storage
+from .ratelimit import RateLimiter
 from .uploads import UploadManager
 
 
@@ -51,7 +56,71 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     # Let auth.py also accept tokens registered to Tenant rows.
     from . import auth as _auth
     _auth.tenant_token_check = fs.tenant_for_token
-    app = FastAPI(title="ClawFS", version="0.4.0")
+    audit = AuditLog(root)
+    app = FastAPI(title="ClawFS", version="0.5.0")
+
+    # ---------- Sprint 6 P2: per-tenant + per-IP rate limiting ----------
+    rate_limiter = RateLimiter()
+    app.state.rate_limiter = rate_limiter
+
+    def _client_ip(request: Request) -> str:
+        # Caddy on the demo VM forwards X-Forwarded-For; honor it.
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(",")[0].strip()
+        return request.client.host if request.client else "unknown"
+
+    @app.middleware("http")
+    async def _rate_limit_mw(request: Request, call_next):
+        path = request.url.path
+        # Never rate-limit health or admin surfaces.
+        if path == "/healthz" or path.startswith("/admin"):
+            return await call_next(request)
+        auth = request.headers.get("authorization")
+        if not auth or not auth.lower().startswith("bearer "):
+            return await call_next(request)
+        token = auth.split(" ", 1)[1].strip()
+        tid = fs.tenant_for_token(token)
+        if not tid:
+            return await call_next(request)
+        limit = fs.get_rate_limit(tid)
+        if not limit:
+            return await call_next(request)
+        ip = _client_ip(request)
+        allowed, retry = rate_limiter.check(tid, ip, limit)
+        if not allowed:
+            from fastapi.responses import JSONResponse
+            audit.write("rate_limit", tid, ip=ip, status=429, ref_path=path)
+            return JSONResponse(
+                status_code=429,
+                headers={"Retry-After": str(retry)},
+                content={
+                    "detail": f"rate limit exceeded ({limit}/min)",
+                    "kind": "rate_limit",
+                    "retry_after_seconds": retry,
+                    "tenant_id": tid,
+                },
+            )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def _audit_mw(request: Request, call_next):
+        # Log writes only (PUT/POST/DELETE on data routes), and quota/rate failures.
+        path = request.url.path
+        if path == "/healthz" or path.startswith("/admin") or request.method == "GET":
+            return await call_next(request)
+        response = await call_next(request)
+        # Resolve tenant for logging
+        a = request.headers.get("authorization")
+        tid = "unknown"
+        if a and a.lower().startswith("bearer "):
+            tid = fs.tenant_for_token(a.split(" ", 1)[1].strip()) or "unknown"
+        op = f"{request.method} {path.split('/')[1] if path.startswith('/') and len(path) > 1 else path}"
+        try:
+            audit.write(op, tid, ip=_client_ip(request), status=response.status_code, ref_path=path)
+        except Exception:
+            pass  # never let audit break a request
+        return response
 
     @app.exception_handler(QuotaExceeded)
     async def _quota_handler(_req: Request, exc: QuotaExceeded):
@@ -199,6 +268,95 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     def usage(authorization: Optional[str] = Header(default=None)):
         tid = _resolve_tenant(fs, authorization)
         return fs.get_usage(tid)
+
+    # ---------- admin endpoints (require admin token) ----------
+    def _serialize_tenant(t) -> dict:
+        ntok = len([x for x in (t.tokens_csv or "").split(",") if x.strip()])
+        return {
+            "id": t.id,
+            "name": t.name or "",
+            "used_bytes": t.used_bytes,
+            "used_objects": t.used_objects,
+            "max_bytes": t.max_bytes,
+            "max_objects": t.max_objects,
+            "token_count": ntok,
+        }
+
+    @app.get("/admin/tenants", dependencies=[Depends(require_admin)])
+    def admin_list_tenants():
+        from sqlmodel import Session, select
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            rows = list(s.exec(select(Tenant)))
+        return [_serialize_tenant(t) for t in rows]
+
+    @app.post("/admin/tenants", dependencies=[Depends(require_admin)])
+    def admin_create_tenant(payload: dict = Body(...)):
+        tid = (payload.get("id") or "").strip()
+        if not tid:
+            raise HTTPException(400, "id is required")
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            if s.get(Tenant, tid) is not None:
+                raise HTTPException(409, f"tenant {tid!r} already exists")
+        token = f"sk_{secrets.token_urlsafe(24)}"
+        t = fs.upsert_tenant(
+            tid,
+            name=payload.get("name") or tid,
+            tokens=[token],
+            max_bytes=payload.get("max_bytes"),
+            max_objects=payload.get("max_objects"),
+        )
+        return {"tenant": _serialize_tenant(t), "token": token}
+
+    @app.patch("/admin/tenants/{tenant_id}", dependencies=[Depends(require_admin)])
+    def admin_update_tenant(tenant_id: str, payload: dict = Body(...)):
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            if s.get(Tenant, tenant_id) is None:
+                raise HTTPException(404, "tenant not found")
+        kwargs = {}
+        if "max_bytes" in payload:
+            kwargs["max_bytes"] = payload["max_bytes"]
+        if "max_objects" in payload:
+            kwargs["max_objects"] = payload["max_objects"]
+        t = fs.upsert_tenant(tenant_id, **kwargs)
+        return _serialize_tenant(t)
+
+    @app.post("/admin/tenants/{tenant_id}/rotate", dependencies=[Depends(require_admin)])
+    def admin_rotate_tenant(tenant_id: str):
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            if s.get(Tenant, tenant_id) is None:
+                raise HTTPException(404, "tenant not found")
+        new_token = f"sk_{secrets.token_urlsafe(24)}"
+        fs.upsert_tenant(tenant_id, tokens=[new_token])
+        return {"token": new_token}
+
+    @app.delete("/admin/tenants/{tenant_id}", dependencies=[Depends(require_admin)])
+    def admin_delete_tenant(tenant_id: str):
+        from sqlmodel import Session
+        from .db import Tenant
+        with Session(fs.engine) as s:
+            t = s.get(Tenant, tenant_id)
+            if t is None:
+                raise HTTPException(404, "tenant not found")
+            s.delete(t)
+            s.commit()
+        return {"deleted": True}
+
+    # ---------- admin UI (HTML, token-gated via fetch) ----------
+    _admin_html_path = Path(__file__).with_name("admin_ui.html")
+
+    @app.get("/admin/", include_in_schema=False)
+    @app.get("/admin", include_in_schema=False)
+    def admin_ui():
+        if _admin_html_path.exists():
+            return FileResponse(_admin_html_path, media_type="text/html")
+        raise HTTPException(404, "admin UI not bundled")
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics():

@@ -61,6 +61,35 @@ def require_auth(authorization: Optional[str] = Header(default=None)) -> str:
     return token
 
 
+def require_admin(authorization: Optional[str] = Header(default=None)) -> str:
+    """FastAPI dependency: enforce admin bearer token.
+
+    Only accepts ``Authorization: Bearer <CLAWFS_ADMIN_TOKEN>`` from env.
+    Fails closed if the env is empty. Tenant tokens are never accepted —
+    admin is a separate, elevated role.
+    """
+    admin_token = os.environ.get("CLAWFS_ADMIN_TOKEN", "").strip()
+    if not admin_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="admin not configured (CLAWFS_ADMIN_TOKEN empty)",
+        )
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    if token != admin_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid admin token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+
 def maybe_require_auth(authorization: Optional[str] = Header(default=None)) -> Optional[str]:
     if os.environ.get("CLAWFS_REQUIRE_AUTH_READ", "").lower() in ("1", "true", "yes"):
         return require_auth(authorization)
