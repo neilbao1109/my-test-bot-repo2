@@ -20,6 +20,10 @@ Pick the one that matches your infra. All three have been verified end-to-end ag
 
 Both speak the same wire protocol, with sha256 dedup + automatic `Idempotency-Key` so retries are safe.
 
+## Big files & multi-tenancy
+
+For multi-GB uploads and shared deployments, see [Large files & tenants](./large-files-and-tenants.md).
+
 ## Backends
 
 ClawFS is the API. Where the bytes live is your choice:
