@@ -24,7 +24,7 @@ from typing import AsyncIterator, Iterable, Optional
 
 from sqlmodel import Session
 
-from .db import Blob, Ref, Upload
+from .db import Blob, Ref, Upload, QuotaExceeded
 from .storage import Storage
 
 PART_FILE_RE = ("part",)
@@ -151,6 +151,35 @@ class UploadManager:
             up = s.get(Upload, upload_id)
             tenant_id = up.tenant_id if up else "default"
             target_ref = up.target_ref if up else None
+
+            # quota check (mirrors ClawFS._enforce_quota)
+            from .db import Tenant, TenantBlob
+            t = s.get(Tenant, tenant_id)
+            link = s.get(TenantBlob, (tenant_id, final_hash))
+
+            def _cleanup_scratch():
+                for p in parts:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+                try:
+                    os.unlink(merged)
+                except OSError:
+                    pass
+                try:
+                    scratch.rmdir()
+                except OSError:
+                    pass
+
+            if t is not None and link is None:
+                if t.max_bytes is not None and t.used_bytes + size > t.max_bytes:
+                    _cleanup_scratch()
+                    raise QuotaExceeded("bytes", t.used_bytes + size, t.max_bytes)
+                if t.max_objects is not None and t.used_objects + 1 > t.max_objects:
+                    _cleanup_scratch()
+                    raise QuotaExceeded("objects", t.used_objects + 1, t.max_objects)
+
             existing = s.get(Blob, final_hash)
             created = existing is None
             if created:
@@ -162,6 +191,17 @@ class UploadManager:
                     os.unlink(merged)
                 except OSError:
                     pass
+
+            # link tenant↔blob for quota accounting
+            if link is None:
+                s.add(TenantBlob(tenant_id=tenant_id, hash=final_hash, refcount=1, size=size))
+                if t is not None:
+                    t.used_bytes += size
+                    t.used_objects += 1
+                    s.add(t)
+            else:
+                link.refcount += 1
+                s.add(link)
 
             if target_ref:
                 tenanted_path = f"{tenant_id}/{target_ref}"

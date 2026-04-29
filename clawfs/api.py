@@ -10,6 +10,7 @@ from fastapi.responses import PlainTextResponse, Response
 
 from .auth import load_tokens, require_auth
 from .core import DEFAULT_TENANT, ClawFS
+from .db import QuotaExceeded
 from .factory import make_storage
 from .uploads import UploadManager
 
@@ -46,7 +47,15 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     storage = make_storage(root)
     fs = ClawFS(storage, db_url=f"sqlite:///{root}/clawfs.db")
     uploads = UploadManager(scratch_root=os.path.join(root, "uploads"), storage=storage, engine=fs.engine)
-    app = FastAPI(title="ClawFS", version="0.3.0")
+    app = FastAPI(title="ClawFS", version="0.4.0")
+
+    @app.exception_handler(QuotaExceeded)
+    async def _quota_handler(_req: Request, exc: QuotaExceeded):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=413,
+            content={"detail": str(exc), "kind": exc.kind, "used": exc.used, "limit": exc.limit},
+        )
 
     started = time.time()
     counters: dict[str, int] = {
@@ -181,6 +190,11 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     @app.get("/healthz")
     def healthz():
         return {"status": "ok", "uptime_seconds": int(time.time() - started)}
+
+    @app.get("/usage", dependencies=[Depends(require_auth)])
+    def usage(authorization: Optional[str] = Header(default=None)):
+        tid = _resolve_tenant(fs, authorization)
+        return fs.get_usage(tid)
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics():

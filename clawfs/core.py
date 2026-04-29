@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 
 from sqlmodel import Session, select
 
-from .db import Blob, Ref, Share, Tenant, make_engine
+from .db import Blob, Ref, Share, Tenant, TenantBlob, QuotaExceeded, make_engine
 from .storage import LocalStorage, Storage
 
 DEFAULT_TENANT = "default"
@@ -46,14 +46,17 @@ class ClawFS:
     # ---------- blobs (shared across tenants by content hash) ----------
     def put_blob(self, data: bytes, tenant_id: str = DEFAULT_TENANT) -> str:
         h = hashlib.sha256(data).hexdigest()
+        size = len(data)
         with Session(self.engine) as s:
+            self._enforce_quota(s, tenant_id, h, size)
             existing = s.get(Blob, h)
             if existing is None:
                 self.storage.put(h, data)
-                s.add(Blob(hash=h, size=len(data), refcount=0, tenant_id=tenant_id))
-                s.commit()
+                s.add(Blob(hash=h, size=size, refcount=0, tenant_id=tenant_id))
             elif not self.storage.exists(h):
                 self.storage.put(h, data)
+            self._link_inc(s, tenant_id, h, size)
+            s.commit()
         return h
 
     def get_blob(self, hash_hex: str, tenant_id: str = DEFAULT_TENANT) -> bytes:
@@ -80,6 +83,11 @@ class ClawFS:
                 ref.updated_at = datetime.utcnow()
                 self._bump(s, old, -1)
                 self._bump(s, h, +1)
+                # rebind link: dec old, inc new (size of new blob)
+                self._link_dec(s, tenant_id, old)
+                new_blob = s.get(Blob, h)
+                if new_blob is not None:
+                    self._link_inc(s, tenant_id, h, new_blob.size)
             s.commit()
         return h, created
 
@@ -109,6 +117,7 @@ class ClawFS:
             if ref is None:
                 return False
             self._bump(s, ref.hash, -1)
+            self._link_dec(s, tenant_id, ref.hash)
             s.delete(ref)
             for sh in s.exec(select(Share).where(Share.ref_path == stored)):
                 s.delete(sh)
@@ -121,6 +130,72 @@ class ClawFS:
             return
         b.refcount = max(0, b.refcount + delta)
         s.add(b)
+
+    # ---------- per-tenant quota accounting ----------
+    def _enforce_quota(self, s: Session, tenant_id: str, h: str, size: int) -> None:
+        """Raise QuotaExceeded if a put_blob of (h, size) would push tenant
+        past its limits. No-op for synthetic 'default' tenant (no Tenant row).
+        """
+        t = s.get(Tenant, tenant_id)
+        if t is None:
+            return  # legacy / single-tenant deployment, no quota enforced
+        # If this exact (tenant, hash) link already exists we'd not consume
+        # extra bytes, so it's always allowed.
+        link = s.get(TenantBlob, (tenant_id, h))
+        if link is not None:
+            return
+        if t.max_bytes is not None and t.used_bytes + size > t.max_bytes:
+            raise QuotaExceeded("bytes", t.used_bytes + size, t.max_bytes)
+        if t.max_objects is not None and t.used_objects + 1 > t.max_objects:
+            raise QuotaExceeded("objects", t.used_objects + 1, t.max_objects)
+
+    def _link_inc(self, s: Session, tenant_id: str, h: str, size: int) -> None:
+        link = s.get(TenantBlob, (tenant_id, h))
+        t = s.get(Tenant, tenant_id)
+        if link is None:
+            link = TenantBlob(tenant_id=tenant_id, hash=h, refcount=1, size=size)
+            s.add(link)
+            if t is not None:
+                t.used_bytes += size
+                t.used_objects += 1
+                s.add(t)
+        else:
+            link.refcount += 1
+            s.add(link)
+
+    def _link_dec(self, s: Session, tenant_id: str, h: str) -> None:
+        link = s.get(TenantBlob, (tenant_id, h))
+        if link is None:
+            return
+        link.refcount -= 1
+        if link.refcount <= 0:
+            t = s.get(Tenant, tenant_id)
+            if t is not None:
+                t.used_bytes = max(0, t.used_bytes - link.size)
+                t.used_objects = max(0, t.used_objects - 1)
+                s.add(t)
+            s.delete(link)
+        else:
+            s.add(link)
+
+    def get_usage(self, tenant_id: str) -> dict:
+        with Session(self.engine) as s:
+            t = s.get(Tenant, tenant_id)
+            if t is None:
+                return {
+                    "tenant_id": tenant_id,
+                    "used_bytes": 0, "used_objects": 0,
+                    "max_bytes": None, "max_objects": None,
+                    "unmanaged": True,
+                }
+            return {
+                "tenant_id": tenant_id,
+                "used_bytes": t.used_bytes,
+                "used_objects": t.used_objects,
+                "max_bytes": t.max_bytes,
+                "max_objects": t.max_objects,
+                "unmanaged": False,
+            }
 
     # ---------- gc ----------
     def gc(self, tenant_id: Optional[str] = None) -> int:
