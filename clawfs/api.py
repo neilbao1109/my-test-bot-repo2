@@ -3,14 +3,41 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Optional
+from typing import AsyncIterator, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response
 
-from .auth import maybe_require_auth, require_auth
-from .core import ClawFS
+from .auth import load_tokens, require_auth
+from .core import DEFAULT_TENANT, ClawFS
 from .factory import make_storage
+from .uploads import UploadManager
+
+
+def _resolve_tenant(fs: ClawFS, authorization: Optional[str]) -> str:
+    """Look at the bearer token and find the matching tenant.
+
+    - If `authorization` is missing/invalid → "default" (read paths fall here).
+    - If the token matches a Tenant record → that tenant.id.
+    - Otherwise → "default" (back-compat with single-tenant deployments
+      where CLAWFS_API_TOKENS holds a flat list and no Tenant rows exist).
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return DEFAULT_TENANT
+    token = authorization.split(" ", 1)[1].strip()
+    tid = fs.tenant_for_token(token)
+    return tid or DEFAULT_TENANT
+
+
+def _maybe_auth(authorization: Optional[str] = Header(default=None)) -> Optional[str]:
+    if os.environ.get("CLAWFS_REQUIRE_AUTH_READ", "").lower() in ("1", "true", "yes"):
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(401, "missing bearer token")
+        token = authorization.split(" ", 1)[1].strip()
+        if token not in load_tokens():
+            raise HTTPException(401, "invalid token")
+        return token
+    return authorization
 
 
 def create_app(root: Optional[str] = None) -> FastAPI:
@@ -18,7 +45,8 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     os.makedirs(root, exist_ok=True)
     storage = make_storage(root)
     fs = ClawFS(storage, db_url=f"sqlite:///{root}/clawfs.db")
-    app = FastAPI(title="ClawFS", version="0.2.0")
+    uploads = UploadManager(scratch_root=os.path.join(root, "uploads"), storage=storage, engine=fs.engine)
+    app = FastAPI(title="ClawFS", version="0.3.0")
 
     started = time.time()
     counters: dict[str, int] = {
@@ -26,45 +54,97 @@ def create_app(root: Optional[str] = None) -> FastAPI:
         "ref_put": 0, "ref_get": 0, "ref_del": 0, "ref_list": 0,
         "share_create": 0, "share_resolve": 0,
         "gc_run": 0,
+        "upload_create": 0, "upload_part": 0, "upload_complete": 0, "upload_abort": 0,
     }
 
     # ---------- write endpoints (require auth) ----------
     @app.put("/blobs", dependencies=[Depends(require_auth)])
-    async def put_blob(file: UploadFile = File(...)):
+    async def put_blob(file: UploadFile = File(...), authorization: Optional[str] = Header(default=None)):
         counters["blob_put"] += 1
-        h = fs.put_blob(await file.read())
+        tid = _resolve_tenant(fs, authorization)
+        h = fs.put_blob(await file.read(), tenant_id=tid)
         return {"hash": h}
 
     @app.put("/refs/{path:path}", dependencies=[Depends(require_auth)])
-    async def put_ref(path: str, file: UploadFile = File(...)):
+    async def put_ref(path: str, file: UploadFile = File(...), authorization: Optional[str] = Header(default=None)):
         counters["ref_put"] += 1
-        h, created = fs.put_ref(path, await file.read())
+        tid = _resolve_tenant(fs, authorization)
+        h, created = fs.put_ref(path, await file.read(), tenant_id=tid)
         return {"path": path, "hash": h, "created": created}
 
     @app.delete("/refs/{path:path}", dependencies=[Depends(require_auth)])
-    def delete_ref(path: str):
+    def delete_ref(path: str, authorization: Optional[str] = Header(default=None)):
         counters["ref_del"] += 1
-        if not fs.delete_ref(path):
+        tid = _resolve_tenant(fs, authorization)
+        if not fs.delete_ref(path, tenant_id=tid):
             raise HTTPException(404, "ref not found")
         return {"deleted": path}
 
     @app.post("/shares", dependencies=[Depends(require_auth)])
-    def create_share(ref_path: str = Form(...), ttl_seconds: Optional[int] = Form(None)):
+    def create_share(ref_path: str = Form(...), ttl_seconds: Optional[int] = Form(None),
+                     authorization: Optional[str] = Header(default=None)):
         counters["share_create"] += 1
+        tid = _resolve_tenant(fs, authorization)
         try:
-            token = fs.create_share(ref_path, ttl_seconds)
+            token = fs.create_share(ref_path, ttl_seconds, tenant_id=tid)
         except KeyError:
             raise HTTPException(404, "ref not found")
         return {"token": token, "url": f"/shares/{token}"}
 
     @app.post("/gc", dependencies=[Depends(require_auth)])
-    def gc():
+    def gc(authorization: Optional[str] = Header(default=None)):
         counters["gc_run"] += 1
-        return {"removed": fs.gc()}
+        tid = _resolve_tenant(fs, authorization)
+        # If "default" tenant (no tenant configured) → GC everything.
+        scope = None if tid == DEFAULT_TENANT else tid
+        return {"removed": fs.gc(tenant_id=scope)}
+
+    # ---------- multipart upload ----------
+    @app.post("/uploads", dependencies=[Depends(require_auth)])
+    def upload_create(target_ref: Optional[str] = Form(default=None),
+                      authorization: Optional[str] = Header(default=None)):
+        counters["upload_create"] += 1
+        tid = _resolve_tenant(fs, authorization)
+        upload_id = uploads.create(tenant_id=tid, target_ref=target_ref)
+        return {"id": upload_id, "tenant_id": tid, "target_ref": target_ref}
+
+    @app.put("/uploads/{upload_id}/parts/{part_number}", dependencies=[Depends(require_auth)])
+    async def upload_part(upload_id: str, part_number: int, request: Request):
+        counters["upload_part"] += 1
+
+        async def _stream() -> AsyncIterator[bytes]:
+            async for chunk in request.stream():
+                yield chunk
+
+        try:
+            size, etag = await uploads.write_part(upload_id, part_number, _stream())
+        except FileNotFoundError:
+            raise HTTPException(404, "upload not found or completed")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"n": part_number, "size": size, "etag": etag}
+
+    @app.post("/uploads/{upload_id}/complete", dependencies=[Depends(require_auth)])
+    def upload_complete(upload_id: str):
+        counters["upload_complete"] += 1
+        try:
+            res = uploads.complete(upload_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "upload not found")
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"hash": res.hash, "size": res.size, "blob_created": res.created}
+
+    @app.delete("/uploads/{upload_id}", dependencies=[Depends(require_auth)])
+    def upload_abort(upload_id: str):
+        counters["upload_abort"] += 1
+        if not uploads.abort(upload_id):
+            raise HTTPException(404, "upload not found")
+        return {"deleted": upload_id}
 
     # ---------- read endpoints (optional auth) ----------
     @app.get("/blobs/{hash_hex}")
-    def get_blob(hash_hex: str, _: object = Depends(maybe_require_auth)):
+    def get_blob(hash_hex: str, _: object = Depends(_maybe_auth)):
         counters["blob_get"] += 1
         try:
             return Response(fs.get_blob(hash_hex), media_type="application/octet-stream")
@@ -72,19 +152,21 @@ def create_app(root: Optional[str] = None) -> FastAPI:
             raise HTTPException(404, "blob not found")
 
     @app.get("/refs/{path:path}")
-    def get_ref(path: str, _: object = Depends(maybe_require_auth)):
+    def get_ref(path: str, authorization: Optional[str] = Depends(_maybe_auth)):
         counters["ref_get"] += 1
-        data = fs.resolve_ref(path)
+        tid = _resolve_tenant(fs, authorization if isinstance(authorization, str) else None)
+        data = fs.resolve_ref(path, tenant_id=tid)
         if data is None:
             raise HTTPException(404, "ref not found")
         return Response(data, media_type="application/octet-stream")
 
     @app.get("/refs")
-    def list_refs(prefix: str = "", _: object = Depends(maybe_require_auth)):
+    def list_refs(prefix: str = "", authorization: Optional[str] = Depends(_maybe_auth)):
         counters["ref_list"] += 1
+        tid = _resolve_tenant(fs, authorization if isinstance(authorization, str) else None)
         return [
             {"path": r.path, "hash": r.hash, "updated_at": r.updated_at.isoformat()}
-            for r in fs.list_refs(prefix)
+            for r in fs.list_refs(prefix, tenant_id=tid)
         ]
 
     @app.get("/shares/{token}")

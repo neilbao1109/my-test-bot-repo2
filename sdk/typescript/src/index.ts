@@ -149,6 +149,53 @@ export class ClawFS {
     return this.json<{ status: string; uptime_seconds: number }>("GET", "/healthz", { auth: false });
   }
 
+  // ---------- chunked / multipart upload (Sprint 4) ----------
+
+  /**
+   * Stream a large blob in fixed-size parts so we never buffer the whole
+   * thing in memory on either side.
+   *
+   * `source` may be a Uint8Array (for tests / small things) or a
+   * ReadableStream<Uint8Array>. `partSize` defaults to 8 MiB. If `targetRef`
+   * is set, the upload is bound to that ref on completion.
+   */
+  async putLarge(
+    source: Uint8Array | ReadableStream<Uint8Array>,
+    opts: { partSize?: number; targetRef?: string } = {},
+  ): Promise<{ hash: string; size: number; created: boolean }> {
+    const partSize = opts.partSize ?? 8 * 1024 * 1024;
+
+    // 1. create session
+    const create = new FormData();
+    if (opts.targetRef) create.append("target_ref", opts.targetRef);
+    const sess = await this.json<{ id: string }>("POST", "/uploads", { body: create, auth: true });
+    const id = sess.id;
+
+    // 2. stream parts
+    const reader = toReader(source, partSize);
+    let n = 0;
+    try {
+      for await (const chunk of reader) {
+        n += 1;
+        const res = await this.raw("PUT", `/uploads/${id}/parts/${n}`, {
+          body: chunk as unknown as BodyInit,
+          auth: true,
+        });
+        if (!res.ok) throw await toError(res);
+      }
+    } catch (e) {
+      try { await this.raw("DELETE", `/uploads/${id}`, { auth: true }); } catch { /* best-effort */ }
+      throw e;
+    }
+    if (n === 0) throw new ClawFSError("empty", "no data to upload");
+
+    // 3. complete
+    const done = await this.json<{ hash: string; size: number; blob_created: boolean }>(
+      "POST", `/uploads/${id}/complete`, { auth: true },
+    );
+    return { hash: done.hash, size: done.size, created: done.blob_created };
+  }
+
   // ---------- internals ----------
 
   private async json<T>(
@@ -186,6 +233,34 @@ export class ClawFS {
 }
 
 // ---------- helpers ----------
+
+async function* toReader(
+  source: Uint8Array | ReadableStream<Uint8Array>,
+  partSize: number,
+): AsyncIterable<Uint8Array> {
+  if (source instanceof Uint8Array) {
+    for (let off = 0; off < source.length; off += partSize) {
+      yield source.subarray(off, Math.min(off + partSize, source.length));
+    }
+    return;
+  }
+  // Re-chunk an arbitrary ReadableStream into exactly partSize buckets.
+  const reader = source.getReader();
+  let buf = new Uint8Array(0);
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (!value || value.length === 0) continue;
+    const merged = new Uint8Array(buf.length + value.length);
+    merged.set(buf, 0); merged.set(value, buf.length);
+    buf = merged;
+    while (buf.length >= partSize) {
+      yield buf.subarray(0, partSize);
+      buf = buf.subarray(partSize);
+    }
+  }
+  if (buf.length > 0) yield buf;
+}
 
 function encodePath(p: string): string {
   return p.split("/").map(encodeURIComponent).join("/");
