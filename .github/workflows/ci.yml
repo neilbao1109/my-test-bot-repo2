@@ -103,7 +103,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build (PR / non-main: no push)
+      - name: "Build (PR / non-main: no push)"
         if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
         uses: docker/build-push-action@v5
         with:
