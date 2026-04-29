@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
+from .audit import AuditLog
 from .auth import load_tokens, require_admin, require_auth
 from .core import DEFAULT_TENANT, ClawFS
 from .db import QuotaExceeded
@@ -55,6 +56,7 @@ def create_app(root: Optional[str] = None) -> FastAPI:
     # Let auth.py also accept tokens registered to Tenant rows.
     from . import auth as _auth
     _auth.tenant_token_check = fs.tenant_for_token
+    audit = AuditLog(root)
     app = FastAPI(title="ClawFS", version="0.5.0")
 
     # ---------- Sprint 6 P2: per-tenant + per-IP rate limiting ----------
@@ -88,6 +90,7 @@ def create_app(root: Optional[str] = None) -> FastAPI:
         allowed, retry = rate_limiter.check(tid, ip, limit)
         if not allowed:
             from fastapi.responses import JSONResponse
+            audit.write("rate_limit", tid, ip=ip, status=429, ref_path=path)
             return JSONResponse(
                 status_code=429,
                 headers={"Retry-After": str(retry)},
@@ -99,6 +102,25 @@ def create_app(root: Optional[str] = None) -> FastAPI:
                 },
             )
         return await call_next(request)
+
+    @app.middleware("http")
+    async def _audit_mw(request: Request, call_next):
+        # Log writes only (PUT/POST/DELETE on data routes), and quota/rate failures.
+        path = request.url.path
+        if path == "/healthz" or path.startswith("/admin") or request.method == "GET":
+            return await call_next(request)
+        response = await call_next(request)
+        # Resolve tenant for logging
+        a = request.headers.get("authorization")
+        tid = "unknown"
+        if a and a.lower().startswith("bearer "):
+            tid = fs.tenant_for_token(a.split(" ", 1)[1].strip()) or "unknown"
+        op = f"{request.method} {path.split('/')[1] if path.startswith('/') and len(path) > 1 else path}"
+        try:
+            audit.write(op, tid, ip=_client_ip(request), status=response.status_code, ref_path=path)
+        except Exception:
+            pass  # never let audit break a request
+        return response
 
     @app.exception_handler(QuotaExceeded)
     async def _quota_handler(_req: Request, exc: QuotaExceeded):
