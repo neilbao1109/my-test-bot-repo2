@@ -44,7 +44,7 @@ def test_resolve_ref_roundtrip(fs):
     assert fs.resolve_ref("missing") is None
 
     # update path to new content; old hash should drop to 0
-    old_hash, _ = fs.put_ref("bin/data", b"old"), None
+    fs.put_ref("bin/data", b"old")
     new_hash, _ = fs.put_ref("bin/data", b"new")
     assert fs.resolve_ref("bin/data") == b"new"
     fs.gc()

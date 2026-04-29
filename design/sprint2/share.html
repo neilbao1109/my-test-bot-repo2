@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ClawFS · Share</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c232c;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #1f6feb;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .section-label {
+    max-width: 980px; margin: 32px auto 8px; padding: 0 20px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+  }
+
+  /* ---------- Modal: create share ---------- */
+  .stage {
+    max-width: 980px; margin: 0 auto; padding: 0 20px 28px;
+  }
+  .scrim {
+    background:
+      repeating-linear-gradient(45deg, rgba(255,255,255,.015) 0 12px, transparent 12px 24px),
+      var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    display: grid; place-items: center;
+  }
+  .modal {
+    width: 100%; max-width: 520px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 24px 64px rgba(0,0,0,.6);
+    overflow: hidden;
+  }
+  .modal header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .modal header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .modal header .x { color: var(--muted); cursor: pointer; }
+  .modal .body { padding: 18px; }
+  .modal .body .field { margin-bottom: 14px; }
+  .modal .body label {
+    display: block; font-size: 12px; color: var(--muted);
+    margin-bottom: 5px; text-transform: uppercase; letter-spacing: .04em;
+  }
+  .input, .select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+  .input:focus, .select:focus { outline: none; border-color: var(--accent); }
+
+  .ref-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--bg); border: 1px solid var(--border);
+    padding: 6px 10px; border-radius: 6px;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .ref-pill .icon { color: var(--accent); }
+
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+
+  .token-block {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 12px;
+    align-items: center;
+  }
+  .qr {
+    width: 96px; height: 96px;
+    background:
+      conic-gradient(from 0deg, #fff 0 25%, #000 0 50%, #fff 0 75%, #000 0) 0 0/24px 24px,
+      #fff;
+    border-radius: 6px;
+    position: relative;
+    image-rendering: pixelated;
+  }
+  .qr::after {
+    content: "QR"; position: absolute; inset: 0;
+    display: grid; place-items: center;
+    color: #555; font-weight: 700; font-size: 11px;
+    background: rgba(255,255,255,.7);
+    border-radius: 6px;
+  }
+  .link-row {
+    display: flex; gap: 6px;
+  }
+  .link-row .input {
+    background: var(--panel-2);
+  }
+  .copy-btn {
+    background: var(--accent-2);
+    color: white; border: none;
+    padding: 0 12px; border-radius: 6px;
+    font-size: 12px; cursor: pointer;
+  }
+  .meta-line {
+    font-size: 11px; color: var(--muted); margin-top: 6px;
+    font-family: var(--mono);
+  }
+
+  .modal footer {
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--panel);
+  }
+  .footer-hint { color: var(--muted); font-size: 12px; }
+  .btn {
+    background: var(--accent-2); color: white;
+    border: none; padding: 7px 14px; border-radius: 6px;
+    font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
+
+  /* ---------- Public access page ---------- */
+  .public-stage {
+    background:
+      radial-gradient(ellipse at top, #1a2332 0%, #0d1117 60%);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 56px 20px;
+    display: grid; place-items: center;
+  }
+  .public-card {
+    width: 100%; max-width: 460px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px;
+    text-align: center;
+    box-shadow: 0 20px 48px rgba(0,0,0,.5);
+  }
+  .public-card .brand {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--muted); font-size: 12px; margin-bottom: 18px;
+  }
+  .public-card .brand .logo {
+    width: 16px; height: 16px; border-radius: 4px;
+    background: linear-gradient(135deg, var(--accent), #a371f7);
+  }
+  .public-card .ficon {
+    width: 56px; height: 56px; border-radius: 12px;
+    background: var(--panel-2);
+    display: grid; place-items: center;
+    font-size: 28px;
+    margin: 0 auto 14px;
+  }
+  .public-card .fname {
+    font-size: 16px; font-weight: 600;
+    word-break: break-all;
+  }
+  .public-card .fmeta {
+    color: var(--muted); font-size: 12px; margin-top: 4px;
+    font-family: var(--mono);
+  }
+  .public-card .download {
+    display: block;
+    margin-top: 22px;
+    padding: 11px;
+    background: var(--accent-2);
+    color: white; text-decoration: none;
+    border-radius: 8px; font-weight: 500;
+  }
+  .public-card .expires {
+    margin-top: 14px;
+    color: var(--warn);
+    font-size: 12px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .public-card .footer {
+    margin-top: 22px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 11px;
+  }
+  .public-card .footer code { font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+  <!-- ============== PART 1: Create share dialog ============== -->
+  <div class="section-label">Owner view · create share</div>
+  <div class="stage">
+    <div class="scrim">
+      <div class="modal">
+        <header>
+          <h2>Share file</h2>
+          <span class="x">✕</span>
+        </header>
+
+        <div class="body">
+
+          <div class="field">
+            <label>Ref</label>
+            <span class="ref-pill">
+              <span class="icon">📄</span>
+              <span>refs/neil/notes/design-notes.md</span>
+            </span>
+            <div class="meta-line">→ sha256:7c08bd1e…b1de · 14 KB</div>
+          </div>
+
+          <div class="field">
+            <label>Expires</label>
+            <div class="row">
+              <select class="select">
+                <option>1 hour</option>
+                <option>24 hours</option>
+                <option selected>7 days</option>
+                <option>30 days</option>
+                <option>Never</option>
+              </select>
+              <select class="select">
+                <option selected>Anyone with the link</option>
+                <option>Password protected</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Public link</label>
+            <div class="link-row">
+              <input class="input" value="https://clawfs.io/s/8H4kQ-rT9p2zX" readonly />
+              <button class="copy-btn">Copy</button>
+            </div>
+            <div class="meta-line">token = 8H4kQ-rT9p2zX · expires 2026-05-06 00:58 UTC</div>
+          </div>
+
+          <div class="field">
+            <label>Or scan</label>
+            <div class="token-block">
+              <div class="qr"></div>
+              <div>
+                <div style="font-size:13px; font-weight:500;">Scan to download</div>
+                <div class="meta-line" style="margin-top:4px;">
+                  Works offline once cached.<br/>
+                  Token is single-secret; rotate any time.
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <footer>
+          <span class="footer-hint">Anyone with the link can download until it expires.</span>
+          <div style="display:flex; gap:8px;">
+            <button class="btn ghost">Revoke</button>
+            <button class="btn">Done</button>
+          </div>
+        </footer>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== PART 2: Public access page ============== -->
+  <div class="section-label">Visitor view · public download page</div>
+  <div class="stage">
+    <div class="public-stage">
+      <div class="public-card">
+        <div class="brand"><span class="logo"></span> ClawFS</div>
+        <div class="ficon">📄</div>
+        <div class="fname">design-notes.md</div>
+        <div class="fmeta">14.2 KB · sha256:7c08…b1de</div>
+
+        <a class="download" href="#">⬇ Download</a>
+
+        <div class="expires">⏳ Link expires in 6 days, 23 hours</div>
+
+        <div class="footer">
+          Shared via ClawFS · token <code>8H4kQ-rT9p2zX</code><br/>
+          Content is verified by hash on download.
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
