@@ -67,6 +67,11 @@ class Tenant(SQLModel, table=True):
     used_bytes: int = 0
     used_objects: int = 0
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Sprint 6 P2: per-tenant rate limit (req/min). NULL = unlimited.
+    rate_limit_per_minute: Optional[int] = None
+    # Sprint 6 P2: if True, reset usage counters at UTC midnight (demo tenant).
+    daily_reset: bool = False
+    last_reset_at: Optional[datetime] = None
 
 
 class TenantBlob(SQLModel, table=True):
@@ -112,6 +117,15 @@ def _migrate(engine) -> None:
         additions.append(("blob", "tenant_id VARCHAR DEFAULT 'default' NOT NULL"))
     if "tenant_id" not in cols("ref"):
         additions.append(("ref", "tenant_id VARCHAR DEFAULT 'default' NOT NULL"))
+    # Sprint 6 P2: rate-limit + daily reset columns on tenant table.
+    if "tenant" in insp.get_table_names():
+        tcols = cols("tenant")
+        if "rate_limit_per_minute" not in tcols:
+            additions.append(("tenant", "rate_limit_per_minute INTEGER"))
+        if "daily_reset" not in tcols:
+            additions.append(("tenant", "daily_reset BOOLEAN DEFAULT 0 NOT NULL"))
+        if "last_reset_at" not in tcols:
+            additions.append(("tenant", "last_reset_at DATETIME"))
 
     if not additions:
         return
@@ -120,6 +134,8 @@ def _migrate(engine) -> None:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
         # Existing refs were stored without a tenant prefix; rewrite their
         # path so the multi-tenant code path can resolve them as 'default/...'.
-        conn.execute(
-            text("UPDATE ref SET path = 'default/' || path WHERE path NOT LIKE 'default/%'")
-        )
+        # Only run if we just added the ref.tenant_id column (legacy upgrade).
+        if any(t == "ref" and "tenant_id" in ddl for t, ddl in additions):
+            conn.execute(
+                text("UPDATE ref SET path = 'default/' || path WHERE path NOT LIKE 'default/%'")
+            )
