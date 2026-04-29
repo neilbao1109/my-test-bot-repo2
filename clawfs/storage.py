@@ -110,7 +110,7 @@ class AzureBlobStorage(Storage):
         self.connection_string = connection_string or os.environ.get(
             "AZURE_STORAGE_CONNECTION_STRING"
         )
-        self.account_url = account_url
+        self.account_url = account_url or os.environ.get("CLAWFS_AZURE_ACCOUNT_URL")
         self.credential = credential
         if not self.connection_string and not self.account_url:
             raise ValueError(
