@@ -30,15 +30,29 @@ jobs:
       - name: Install
         run: |
           pip install -U pip
-          pip install -e ".[test,azure]"
-      - name: Smoke import azure backend
-        run: python -c "from clawfs.storage import AzureBlobStorage; print('ok')"
+          pip install -e ".[test,azure,s3]"
+      - name: Smoke import azure + s3 backends
+        run: python -c "from clawfs.storage import AzureBlobStorage, S3Storage; print('ok')"
       - name: Pytest
         run: pytest tests/ -x -q
 
+  ts-sdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/typescript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci || npm install
+      - run: npm run build
+      - run: npm test
+
   docker:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, ts-sdk]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

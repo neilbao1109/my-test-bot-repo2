@@ -1,0 +1,48 @@
+{
+  "name": "@clawfs/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for ClawFS — content-addressed file system for agents.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "test": "vitest run",
+    "test:live": "CLAWFS_LIVE=1 vitest run tests/live.test.ts",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "keywords": [
+    "clawfs",
+    "agents",
+    "blob",
+    "content-addressed",
+    "sdk"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/neilbao1109/my-test-bot-repo2.git",
+    "directory": "sdk/typescript"
+  }
+}

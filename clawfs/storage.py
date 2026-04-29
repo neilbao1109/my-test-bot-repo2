@@ -186,3 +186,103 @@ class AzureBlobStorage(Storage):
             parts = name.split("/", 1)
             if len(parts) == 2 and len(parts[0]) == 2:
                 yield parts[0] + parts[1]
+
+
+class S3Storage(Storage):
+    """S3-compatible blob backend (AWS S3, MinIO, R2, Backblaze B2, ...).
+
+    Reads bucket from `CLAWFS_S3_BUCKET`, optional endpoint from
+    `CLAWFS_S3_ENDPOINT_URL` (set this for MinIO/R2/B2), region from
+    `CLAWFS_S3_REGION` or `AWS_REGION`. Credentials follow the standard boto3
+    chain (env vars, ~/.aws, IAM role, IRSA, etc.).
+
+    Blob naming matches LocalStorage / AzureBlobStorage: ``objects/<aa>/<rest>``.
+    """
+
+    def __init__(
+        self,
+        bucket: Optional[str] = None,
+        endpoint_url: Optional[str] = None,
+        region: Optional[str] = None,
+        client=None,
+    ):
+        self.bucket = bucket or os.environ.get("CLAWFS_S3_BUCKET")
+        if not self.bucket:
+            raise ValueError(
+                "S3Storage requires bucket (arg or CLAWFS_S3_BUCKET env)"
+            )
+        self.endpoint_url = endpoint_url or os.environ.get("CLAWFS_S3_ENDPOINT_URL")
+        self.region = region or os.environ.get("CLAWFS_S3_REGION") or os.environ.get("AWS_REGION")
+        self._client = client
+
+    def _client_lazy(self):
+        if self._client is None:
+            try:
+                import boto3  # type: ignore
+            except ImportError as e:  # pragma: no cover
+                raise ImportError(
+                    "boto3 not installed; pip install 'clawfs[s3]'"
+                ) from e
+            kwargs = {}
+            if self.endpoint_url:
+                kwargs["endpoint_url"] = self.endpoint_url
+            if self.region:
+                kwargs["region_name"] = self.region
+            self._client = boto3.client("s3", **kwargs)
+        return self._client
+
+    def put(self, hash_hex: str, data: bytes) -> None:
+        if self.exists(hash_hex):
+            return
+        self._client_lazy().put_object(Bucket=self.bucket, Key=_name(hash_hex), Body=data)
+
+    def get(self, hash_hex: str) -> bytes:
+        try:
+            obj = self._client_lazy().get_object(Bucket=self.bucket, Key=_name(hash_hex))
+            return obj["Body"].read()
+        except Exception as e:
+            try:
+                from botocore.exceptions import ClientError  # type: ignore
+                if isinstance(e, ClientError) and e.response.get("Error", {}).get("Code") in (
+                    "NoSuchKey",
+                    "404",
+                    "NotFound",
+                ):
+                    raise FileNotFoundError(f"blob {hash_hex} not found") from e
+            except ImportError:
+                pass
+            raise
+
+    def exists(self, hash_hex: str) -> bool:
+        try:
+            self._client_lazy().head_object(Bucket=self.bucket, Key=_name(hash_hex))
+            return True
+        except Exception as e:
+            try:
+                from botocore.exceptions import ClientError  # type: ignore
+                if isinstance(e, ClientError) and e.response.get("Error", {}).get("Code") in (
+                    "404",
+                    "NoSuchKey",
+                    "NotFound",
+                ):
+                    return False
+            except ImportError:
+                pass
+            raise
+
+    def delete(self, hash_hex: str) -> None:
+        try:
+            self._client_lazy().delete_object(Bucket=self.bucket, Key=_name(hash_hex))
+        except Exception:
+            pass
+
+    def iter_hashes(self) -> Iterator[str]:
+        c = self._client_lazy()
+        paginator = c.get_paginator("list_objects_v2")
+        prefix = "objects/"
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            for obj in page.get("Contents", []) or []:
+                name = obj["Key"][len(prefix):]
+                parts = name.split("/", 1)
+                if len(parts) == 2 and len(parts[0]) == 2:
+                    yield parts[0] + parts[1]
